@@ -1,0 +1,29 @@
+name: Bot de Ventas Diario
+
+on:
+  schedule:
+    # Corre a las 11:00 UTC (que son las 6:00 AM Colombia)
+    - cron: '0 11 * * *'
+  workflow_dispatch: # Permite correrlo manual si quieres probar
+
+jobs:
+  ejecutar-robot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código del repositorio
+        uses: actions/checkout@v3
+
+      - name: Instalar Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Instalar librerías
+        run: pip install pandas requests gspread oauth2client pytz
+
+      - name: Correr Script de Ventas
+        env:
+          # Aquí lee los secretos que guardaremos en GitHub
+          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+          LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
+        run: python daily_bot.py
