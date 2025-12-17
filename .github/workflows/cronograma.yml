@@ -4,12 +4,18 @@ on:
   schedule:
     # Corre a las 11:00 UTC (6:00 AM Colombia)
     - cron: '0 11 * * *'
-  workflow_dispatch: # Permite correrlo manual desde GitHub Actions
+  workflow_dispatch: # Permite correrlo manual
 
 jobs:
   ejecutar-robot:
     runs-on: ubuntu-latest
     
+    # --- CAMBIO CLAVE: DEFINICIÓN GLOBAL ---
+    # Al ponerlos aquí, están disponibles para TODOS los pasos
+    env:
+      LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
+      GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
     steps:
       - name: Descargar código del repositorio
         uses: actions/checkout@v3
@@ -23,8 +29,5 @@ jobs:
         run: pip install pandas requests gspread oauth2client pytz
 
       - name: Correr Script de Ventas
-        env:
-          # IMPORTANTE: Estos nombres deben coincidir con los Secrets de GitHub
-          GCP_SERVICE_ACCOUNT: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-          LOYVERSE_TOKEN: ${{ secrets.LOYVERSE_TOKEN }}
+        # Ya no necesitamos definir 'env' aquí porque está arriba
         run: python daily_bot.py
