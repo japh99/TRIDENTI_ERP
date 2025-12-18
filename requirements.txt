@@ -1,7 +1,10 @@
 streamlit
 pandas
-requests
+plotly
 gspread
 oauth2client
-plotly
-google-api-python-client
+cloudinary
+streamlit-option-menu
+extra-streamlit-components
+pytz
+requests

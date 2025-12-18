@@ -4,132 +4,117 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import os
 import json
-import time
-
-print("🍔 INICIANDO SINCRONIZACIÓN CON LOYVERSE (VERSIÓN BLINDADA)...")
+import pytz
 
 # --- CONFIGURACIÓN ---
-try:
-    # 1. CONECTAR A GOOGLE SHEETS
-    json_creds = os.environ.get('GCP_SERVICE_ACCOUNT')
-    if not json_creds:
-        print("❌ ERROR: No se encontró el secreto de Google (GCP_SERVICE_ACCOUNT).")
-        exit()
+NOMBRE_HOJA_MENU = "DB_MENU_LOYVERSE"
+
+def conectar_google_sheets_script():
+    try:
+        # Busca el secreto en el entorno (cuando corre en la nube)
+        json_creds = os.environ.get('GCP_SERVICE_ACCOUNT')
         
-    creds_dict = json.loads(json_creds)
-    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-    creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-    client = gspread.authorize(creds)
-    sheet = client.open("TRIDENTI_DB_V7") 
-    hoja_menu = sheet.worksheet("DB_MENU_LOYVERSE")
+        # Si no lo encuentra (estás en local), intenta buscar el archivo físico
+        if not json_creds:
+            if os.path.exists("credenciales.json"): # Nombre de tu archivo local si lo tienes
+                with open("credenciales.json") as f:
+                    creds_dict = json.load(f)
+            else:
+                # Fallback: Intenta leer de streamlit secrets si se ejecuta desde la app
+                try:
+                    import streamlit as st
+                    json_creds = st.secrets["GCP_SERVICE_ACCOUNT"]
+                    creds_dict = json.loads(json_creds)
+                except:
+                    print("❌ No se encontraron credenciales.")
+                    return None
+        else:
+            creds_dict = json.loads(json_creds)
 
-    # 2. OBTENER TOKEN DE LOYVERSE
-    loyverse_token = os.environ.get('LOYVERSE_TOKEN')
-    if not loyverse_token:
-        print("❌ ERROR: No se encontró el secreto de Loyverse (LOYVERSE_TOKEN).")
-        exit()
+        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        return client.open("TRIDENTI_DB_V7")
+    except Exception as e:
+        print(f"❌ Error conexión DB: {e}")
+        return None
 
-except Exception as e:
-    print(f"❌ Error de Configuración Inicial: {e}")
-    exit()
+def obtener_token():
+    # Intenta obtener el token de entorno o streamlit secrets
+    token = os.environ.get('LOYVERSE_TOKEN')
+    if not token:
+        try:
+            import streamlit as st
+            token = st.secrets["LOYVERSE_TOKEN"]
+        except:
+            # Token de respaldo directo (Solo si fallan los secrets)
+            token = "2af9f2845c0b4417925d357b63cfab86"
+    return token
 
-# --- FUNCIONES ---
-
-def traer_todos_los_productos():
-    print("📡 Contactando a Loyverse API...")
-    url = "https://api.loyverse.com/v1.0/items"
-    headers = {"Authorization": f"Bearer {loyverse_token}"}
+def descargar_menu():
+    print("⏳ Iniciando descarga de menú Loyverse...")
     
-    todos_los_items = []
-    cursor = None 
+    token = obtener_token()
+    url = "https://api.loyverse.com/v1.0/items"
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    productos = []
+    cursor = None
     
     while True:
+        params = {"limit": 250}
+        if cursor: params["cursor"] = cursor
+        
         try:
-            params = {"limit": 50} 
-            if cursor:
-                params["cursor"] = cursor
-                
-            response = requests.get(url, headers=headers, params=params)
+            r = requests.get(url, headers=headers, params=params)
+            data = r.json()
+            items = data.get("items", [])
             
-            if response.status_code != 200:
-                print(f"❌ Error API Loyverse: {response.text}")
-                break
+            for i in items:
+                nombre = i.get("item_name", "Sin Nombre")
+                id_item = i.get("id", "")
                 
-            data = response.json()
-            items = data.get('items', [])
-            todos_los_items.extend(items)
+                # Obtener variantes (Precios y Tamaños)
+                variants = i.get("variants", [])
+                for v in variants:
+                    nombre_final = nombre
+                    if len(variants) > 1 and v.get("option1_value"):
+                         nombre_final = f"{nombre} - {v.get('option1_value')}"
+                    
+                    precio = v.get("default_price", 0)
+                    costo = v.get("cost", 0)
+                    id_var = v.get("variant_id", "")
+                    sku = v.get("sku", "")
+                    
+                    productos.append([id_var, nombre_final, precio, costo, sku, id_item])
             
-            cursor = data.get('cursor')
-            if not cursor:
-                break 
+            cursor = data.get("cursor")
+            if not cursor: break
+            
         except Exception as e:
-            print(f"⚠️ Error durante la descarga: {e}")
+            print(f"❌ Error API: {e}")
             break
             
-    print(f"✅ Se descargaron {len(todos_los_items)} productos de Loyverse.")
-    return todos_los_items
+    print(f"✅ Se encontraron {len(productos)} productos.")
+    return productos
 
-def procesar_datos(items):
-    data_para_excel = []
+def guardar_en_sheets(productos):
+    sheet = conectar_google_sheets_script()
+    if not sheet: return
     
-    for item in items:
-        # Usamos .get() para evitar errores si falta algún dato
-        variants = item.get('variants', [])
-        parent_name = item.get('item_name', 'Sin Nombre')
-        cat_id = item.get('category_id', '')
-
-        for variant in variants:
-            variant_id = variant.get('variant_id', '')
-            
-            # Lógica segura para el nombre
-            variant_name = variant.get('item_name') # Puede ser None
-            full_name = parent_name
-            
-            # Solo agregamos el nombre de la variante si existe y es diferente al padre
-            if variant_name and variant_name != parent_name:
-                 full_name = f"{parent_name} - {variant_name}"
-            
-            price = variant.get('default_price', 0)
-            sku = variant.get('sku', 'SIN-SKU')
-            
-            # Fila segura
-            fila = [
-                str(variant_id), 
-                str(full_name), 
-                str(cat_id), 
-                str(sku), 
-                price, 
-                0, # Costo
-                0, # Margen
-                "PENDIENTE" # Semáforo
-            ]
-            data_para_excel.append(fila)
-            
-    return data_para_excel
-
-# --- EJECUCIÓN ---
+    try:
+        try: ws = sheet.worksheet(NOMBRE_HOJA_MENU)
+        except: ws = sheet.add_worksheet(title=NOMBRE_HOJA_MENU, rows="2000", cols="10")
+        
+        ws.clear()
+        ws.append_row(["ID_Variante", "Nombre_Producto", "Precio", "Costo", "SKU", "ID_Producto_Padre"])
+        ws.append_rows(productos)
+        print("💾 Guardado exitoso en Google Sheets.")
+        
+    except Exception as e:
+        print(f"❌ Error guardando: {e}")
 
 if __name__ == "__main__":
-    try:
-        items_raw = traer_todos_los_productos()
-
-        if items_raw:
-            datos_limpios = procesar_datos(items_raw)
-            
-            print(f"💾 Guardando {len(datos_limpios)} filas en Google Sheets...")
-            
-            # Limpiar hoja antigua (Preservando encabezados A1:H1)
-            hoja_menu.batch_clear(["A2:H5000"]) 
-            
-            # Escribir nuevos datos
-            if len(datos_limpios) > 0:
-                hoja_menu.update(range_name="A2", values=datos_limpios)
-                print("🎉 ¡ÉXITO TOTAL! Revisa tu Excel ahora.")
-            else:
-                print("⚠️ No se generaron datos para guardar.")
-
-        else:
-            print("⚠️ La lista de productos llegó vacía.")
-            
-    except Exception as e:
-        print(f"❌ Ocurrió un error inesperado: {e}")
+    prods = descargar_menu()
+    if prods:
+        guardar_en_sheets(prods)

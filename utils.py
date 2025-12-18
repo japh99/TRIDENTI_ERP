@@ -9,7 +9,7 @@ from datetime import datetime
 import pytz
 import cloudinary
 import cloudinary.uploader
-import time # Necesario para esperar
+import time
 
 # --- CONFIGURACIÓN ---
 ID_CARPETA_DRIVE = "1OYsctJyo75JlZm9MLiAfTuHKtvq1bpF6"
@@ -35,7 +35,6 @@ def generar_id():
     return str(uuid.uuid4().hex)[:5].upper()
 
 def leer_datos_seguro(hoja):
-    """Intenta leer con reintentos automáticos si sale error 429"""
     max_intentos = 3
     for i in range(max_intentos):
         try:
@@ -48,7 +47,7 @@ def leer_datos_seguro(hoja):
             return df
         except Exception as e:
             if "429" in str(e):
-                time.sleep(2 * (i + 1)) # Espera progresiva (2s, 4s, 6s)
+                time.sleep(2 * (i + 1))
                 continue
             else:
                 return pd.DataFrame()
@@ -57,8 +56,7 @@ def leer_datos_seguro(hoja):
 def limpiar_cache():
     st.cache_data.clear()
 
-# --- CONEXIÓN CACHEADA ---
-@st.cache_resource(ttl=600) # Mantiene la conexión viva 10 min
+@st.cache_resource(ttl=600)
 def conectar_google_sheets():
     try:
         json_creds = os.environ.get('GCP_SERVICE_ACCOUNT')
@@ -72,14 +70,26 @@ def conectar_google_sheets():
         st.error(f"Error Conexión: {e}")
         return None
 
-# --- SUBIDA FOTOS ---
-def subir_foto_drive(archivo, subcarpeta=None):
+# --- SUBIDA FOTOS (MEJORADA PARA CARPETAS PRINCIPALES) ---
+def subir_foto_drive(archivo, subcarpeta=None, carpeta_raiz="TRIDENTI_FACTURAS"):
+    """
+    Sube archivos a Cloudinary.
+    - carpeta_raiz: La carpeta principal (Por defecto TRIDENTI_FACTURAS, pero puede ser COSTOS_FIJOS)
+    - subcarpeta: La subcategoría (ej: NOMINA, INTERNET)
+    """
     try:
         hoy_co = datetime.now(ZONA_HORARIA)
         meses = {1:"01-Ene", 2:"02-Feb", 3:"03-Mar", 4:"04-Abr", 5:"05-May", 6:"06-Jun", 7:"07-Jul", 8:"08-Ago", 9:"09-Sep", 10:"10-Oct", 11:"11-Nov", 12:"12-Dic"}
-        ruta = f"TRIDENTI_FACTURAS/{hoy_co.year}/{meses[hoy_co.month]}/{hoy_co.day:02d}"
-        if subcarpeta: ruta += f"/{subcarpeta}"
-        nombre = f"DOC_{hoy_co.strftime('%H%M%S')}_{archivo.name.split('.')[0]}"
+        
+        # Ruta Estructurada: CARPETA_RAIZ / AÑO / MES / DIA / SUBCARPETA
+        ruta = f"{carpeta_raiz}/{hoy_co.year}/{meses[hoy_co.month]}/{hoy_co.day:02d}"
+        
+        if subcarpeta:
+            ruta += f"/{subcarpeta}"
+            
+        nombre = f"SOPORTE_{hoy_co.strftime('%H%M%S')}_{archivo.name.split('.')[0]}"
+        
         res = cloudinary.uploader.upload(archivo, folder=ruta, public_id=nombre, resource_type="auto")
         return res.get("secure_url")
-    except Exception as e: return f"Error Cloudinary: {e}"
+    except Exception as e:
+        return f"Error Cloudinary: {e}"

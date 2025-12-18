@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 from datetime import datetime
 import time
 from utils import conectar_google_sheets, leer_datos_seguro, limpiar_numero
@@ -16,39 +17,54 @@ def formato_moneda_co(valor):
     try: return f"$ {int(float(valor)):,}".replace(",", ".")
     except: return "$ 0"
 
-# --- CARGA DE DATOS UNIFICADA ---
-@st.cache_data(ttl=300)
-def cargar_todo(data_ventas, data_recetas, data_insumos):
+# --- BACKEND ---
+
+def obtener_total_gastos_fijos(sheet):
     try:
-        # 1. Procesar Ventas
-        df_v = pd.DataFrame(data_ventas)
-        df_v["Fecha"] = pd.to_datetime(df_v["Fecha"])
-        df_v["Total_Dinero"] = pd.to_numeric(df_v["Total_Dinero"], errors='coerce').fillna(0)
-        df_v["Cantidad_Vendida"] = pd.to_numeric(df_v["Cantidad_Vendida"], errors='coerce').fillna(0)
+        ws = sheet.worksheet(HOJA_CONFIG)
+        data = ws.get_all_records()
+        total = 0.0
+        for row in data:
+            param = str(row.get("Parametro", ""))
+            if param.startswith("GASTO_FIJO_"):
+                valor_raw = str(row.get("Valor", "0")).split("|")[0]
+                total += limpiar_numero(valor_raw)
+        return total
+    except: return 0.0
+
+@st.cache_data(ttl=300)
+def cargar_datos_analisis(_sheet):
+    try:
+        # 1. Ventas
+        ws_v = _sheet.worksheet(HOJA_VENTAS)
+        df_v = pd.DataFrame(ws_v.get_all_records())
         
-        # Enriquecer Ventas para Dashboard Visual
-        dias_es = {0: 'Lunes', 1: 'Martes', 2: 'Miércoles', 3: 'Jueves', 4: 'Viernes', 5: 'Sábado', 6: 'Domingo'}
-        df_v["Dia_Semana"] = df_v["Fecha"].dt.dayofweek.map(dias_es)
-        df_v["Dia_Index"] = df_v["Fecha"].dt.dayofweek
-        # Extraer hora solo si existe y es válida
-        df_v["Hora_Num"] = df_v["Hora"].apply(lambda x: int(str(x).split(':')[0]) if ':' in str(x) else 0)
+        if not df_v.empty:
+            df_v["Fecha"] = pd.to_datetime(df_v["Fecha"])
+            df_v["Total_Dinero"] = pd.to_numeric(df_v["Total_Dinero"], errors='coerce').fillna(0)
+            df_v["Cantidad_Vendida"] = pd.to_numeric(df_v["Cantidad_Vendida"], errors='coerce').fillna(0)
+            
+            dias_es = {0: 'Lunes', 1: 'Martes', 2: 'Miércoles', 3: 'Jueves', 4: 'Viernes', 5: 'Sábado', 6: 'Domingo'}
+            df_v["Dia_Semana"] = df_v["Fecha"].dt.dayofweek.map(dias_es)
+            df_v["Dia_Index"] = df_v["Fecha"].dt.dayofweek
+            df_v["Hora_Num"] = df_v["Hora"].apply(lambda x: int(str(x).split(':')[0]) if ':' in str(x) else 0)
 
-        # 2. Procesar Recetas (Para BCG)
-        df_r = pd.DataFrame(data_recetas[1:], columns=data_recetas[0])
-        if len(df_r.columns) >= 5:
-            df_r = df_r.iloc[:, [1, 3, 4]]
-            df_r.columns = ["Nombre_Plato", "Ingrediente", "Cantidad"]
-        else:
-            df_r = pd.DataFrame(columns=["Nombre_Plato", "Ingrediente", "Cantidad"])
-
-        # 3. Procesar Insumos (Para Costos)
-        df_i = pd.DataFrame(data_insumos)
+        # 2. Insumos
+        ws_i = _sheet.worksheet(HOJA_INSUMOS)
+        df_i = pd.DataFrame(ws_i.get_all_records())
         df_i["Costo_Promedio_Ponderado"] = df_i["Costo_Promedio_Ponderado"].apply(limpiar_numero)
+        mapa_costos = dict(zip(df_i["Nombre_Insumo"], df_i["Costo_Promedio_Ponderado"]))
+
+        # 3. Recetas
+        ws_r = _sheet.worksheet(HOJA_RECETAS)
+        raw_r = ws_r.get_all_values()
         
-        # 4. Calcular Costos
         costos_platos = {}
-        if not df_i.empty:
-            mapa_costos = dict(zip(df_i["Nombre_Insumo"], df_i["Costo_Promedio_Ponderado"]))
+        if len(raw_r) > 1:
+            df_r = pd.DataFrame(raw_r[1:], columns=raw_r[0])
+            if len(df_r.columns) >= 5:
+                df_r = df_r.iloc[:, [1, 3, 4]]
+                df_r.columns = ["Nombre_Plato", "Ingrediente", "Cantidad"]
             
             for plato in df_r["Nombre_Plato"].unique():
                 ings = df_r[df_r["Nombre_Plato"] == plato]
@@ -59,197 +75,131 @@ def cargar_todo(data_ventas, data_recetas, data_insumos):
                     except: cant = 0
                     costo += mapa_costos.get(ins, 0) * cant
                 costos_platos[plato] = costo
-                
+        
+        # 4. Enriquecer Ventas con Costo Individual
+        if not df_v.empty:
+            df_v["Costo_Unitario_Receta"] = df_v["Nombre_Plato"].map(costos_platos).fillna(0)
+            df_v["Costo_Total_Venta"] = df_v["Costo_Unitario_Receta"] * df_v["Cantidad_Vendida"]
+            
         return df_v, costos_platos
 
-    except Exception as e:
-        return pd.DataFrame(), {}
+    except: return pd.DataFrame(), {}
 
-# --- GESTIÓN GASTOS FIJOS ---
-def cargar_gastos_fijos(sheet):
-    try:
-        ws = sheet.worksheet(HOJA_CONFIG)
-        data = ws.get_all_records()
-        gastos = []
-        defaults = ["Arriendo Local", "Nómina Fija", "Servicios Públicos", "Internet / Software", "Marketing", "Mantenimiento", "Otros"]
-        encontrados = []
-
-        for row in data:
-            param = str(row.get("Parametro", ""))
-            if param.startswith("GASTO_FIJO_"):
-                nom = param.replace("GASTO_FIJO_", "").replace("_", " ")
-                val_raw = str(row.get("Valor", "0"))
-                val, dia = (val_raw.split("|") if "|" in val_raw else (val_raw, "1"))
-                gastos.append({"Gasto": nom, "Valor ($)": limpiar_numero(val), "Día Pago": int(limpiar_numero(dia))})
-                encontrados.append(nom)
-        
-        for d in defaults:
-            if d not in encontrados: gastos.append({"Gasto": d, "Valor ($)": 0.0, "Día Pago": 1})
-            
-        return pd.DataFrame(gastos)
-    except: return pd.DataFrame(columns=["Gasto", "Valor ($)", "Día Pago"])
-
-def guardar_gastos_fijos(sheet, df):
-    try:
-        ws = sheet.worksheet(HOJA_CONFIG)
-        for _, row in df.iterrows():
-            p = f"GASTO_FIJO_{row['Gasto'].replace(' ', '_')}"
-            v = f"{row['Valor ($)']}|{int(row['Día Pago'])}"
-            cell = ws.find(p)
-            if cell: ws.update_cell(cell.row, 2, v)
-            else: ws.append_row([p, v])
-        return True
-    except: return False
-
-# --- INTERFAZ ---
+# --- FRONTEND ---
 def show(sheet):
-    st.title("🧠 Inteligencia de Negocios")
+    st.title("🧠 Inteligencia & Estrategia")
     st.markdown("---")
     if not sheet: return
 
-    # 1. ALERTAS DE PAGO
-    hoy = datetime.now().day
-    df_gastos = cargar_gastos_fijos(sheet)
-    alertas = []
-    if hoy in [14, 15, 16, 29, 30, 31]:
-        nom = df_gastos[df_gastos["Gasto"].str.contains("Nómina", case=False)]
-        if not nom.empty and nom.iloc[0]["Valor ($)"] > 0:
-            alertas.append(f"👷 **QUINCENA:** Prepara {formato_moneda_co(nom.iloc[0]['Valor ($)']/2)}")
-            
-    for _, r in df_gastos.iterrows():
-        if "Nómina" in r["Gasto"]: continue
-        if int(r["Día Pago"]) == hoy: alertas.append(f"📅 **HOY SE PAGA:** {r['Gasto']}")
-    
-    if alertas:
-        with st.container(border=True):
-            st.write("🔔 **Agenda Financiera**")
-            for a in alertas: st.warning(a)
-
-    # 2. CARGA
     with st.spinner("Procesando datos..."):
-        try:
-            ws_v = sheet.worksheet(HOJA_VENTAS)
-            ws_r = sheet.worksheet(HOJA_RECETAS)
-            ws_i = sheet.worksheet(HOJA_INSUMOS)
-            df_ventas, dict_costos = cargar_todo(ws_v.get_all_records(), ws_r.get_all_values(), ws_i.get_all_records())
-        except: return
+        df_ventas, dict_costos = cargar_datos_analisis(sheet)
+        total_gastos_fijos_mensual = obtener_total_gastos_fijos(sheet)
+        gasto_fijo_diario = total_gastos_fijos_mensual / 30
 
-    # 3. FILTROS
-    with st.expander("🔎 Configuración de Análisis", expanded=True):
+    # FILTROS
+    with st.expander("🔎 Filtro de Fechas", expanded=False):
         c1, c2 = st.columns(2)
         if not df_ventas.empty:
             min_d, max_d = df_ventas["Fecha"].min().date(), df_ventas["Fecha"].max().date()
-            rango = c1.date_input("Rango Fechas:", [min_d, max_d])
+            rango = c1.date_input("Periodo:", [min_d, max_d])
             if len(rango) == 2:
                 df_p = df_ventas[(df_ventas["Fecha"].dt.date >= rango[0]) & (df_ventas["Fecha"].dt.date <= rango[1])]
-                c2.info(f"📊 Analizando **{df_p['Fecha'].dt.date.nunique()} días** de ventas.")
-            else: df_p = df_ventas
+                dias_analisis = (rango[1] - rango[0]).days + 1
+                c2.info(f"Analizando **{dias_analisis} días**.")
+            else:
+                df_p = df_ventas; dias_analisis = 1
         else:
-            df_p = pd.DataFrame()
-            st.warning("Sin ventas.")
+            df_p = pd.DataFrame(); dias_analisis = 0; st.warning("Sin ventas.")
 
-    # --- PESTAÑAS (AQUÍ RECUPERAMOS LO VISUAL) ---
-    tab1, tab2, tab3 = st.tabs(["📊 DASHBOARD VENTAS", "🚀 MATRIZ BCG", "⚖️ EQUILIBRIO & GASTOS"])
+    tab_utilidad, tab_dash, tab_pe = st.tabs(["💰 P&L (UTILIDAD REAL)", "📊 DASHBOARD VENTAS", "⚖️ PUNTO DE EQUILIBRIO"])
 
-    # === TAB 1: LO QUE TE GUSTABA (VISUAL) ===
-    with tab1:
+    # --- TAB 1: P&L ---
+    with tab_utilidad:
+        st.subheader("Estado de Resultados Operativo")
+        
         if not df_p.empty:
-            # KPIs
-            tot = df_p["Total_Dinero"].sum()
-            tik = df_p["Numero_Recibo"].nunique()
-            prom = tot/tik if tik>0 else 0
+            # 1. CÁLCULOS
+            venta_total = df_p["Total_Dinero"].sum()
+            # AQUÍ SE DESCUENTA EL COSTO DEL PRODUCTO
+            costo_mercancia = df_p["Costo_Total_Venta"].sum() 
             
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Venta Total", formato_moneda_co(tot))
-            k2.metric("Tickets", tik)
-            k3.metric("Ticket Promedio", formato_moneda_co(prom))
+            utilidad_bruta = venta_total - costo_mercancia
+            gasto_fijo_periodo = gasto_fijo_diario * dias_analisis
+            utilidad_neta = utilidad_bruta - gasto_fijo_periodo
+            margen_neto_pct = (utilidad_neta / venta_total * 100) if venta_total > 0 else 0
+            
+            # 2. TARJETAS
+            col1, col2, col3, col4 = st.columns(4)
+            col1.metric("1. Ventas", formato_moneda_co(venta_total))
+            col2.metric("2. Costo Recetas (CMV)", f"- {formato_moneda_co(costo_mercancia)}", help="Suma del costo de ingredientes de cada plato vendido.")
+            col3.metric("3. Carga Fabril (Fijos)", f"- {formato_moneda_co(gasto_fijo_periodo)}", help=f"Proporcional a {dias_analisis} días.")
+            col4.metric("4. UTILIDAD NETA", formato_moneda_co(utilidad_neta), delta=f"{margen_neto_pct:.1f}% Margen")
             
             st.markdown("---")
             
-            # GRÁFICOS
-            c_g1, c_g2 = st.columns(2)
-            with c_g1:
-                st.subheader("📅 Ventas por Día")
-                df_dia = df_p.groupby("Dia_Semana")["Total_Dinero"].sum().reindex(['Lunes','Martes','Miércoles','Jueves','Viernes','Sábado','Domingo']).reset_index()
-                fig_d = px.bar(df_dia, x="Dia_Semana", y="Total_Dinero", color="Dia_Semana")
-                st.plotly_chart(fig_d, use_container_width=True)
-                
-            with c_g2:
-                st.subheader("🔥 Mapa de Calor (Horas)")
-                df_h = df_p.groupby(["Dia_Index", "Dia_Semana", "Hora_Num"])["Total_Dinero"].sum().reset_index().sort_values("Dia_Index")
-                fig_h = px.density_heatmap(df_h, x="Hora_Num", y="Dia_Semana", z="Total_Dinero", nbinsx=14, color_continuous_scale="Magma")
-                st.plotly_chart(fig_h, use_container_width=True)
+            # --- SECCIÓN DE VERIFICACIÓN DE COSTOS (NUEVO) ---
+            # Detectar qué productos se vendieron pero tienen costo 0 (Sin Receta)
+            productos_sin_costo = df_p[df_p["Costo_Unitario_Receta"] == 0]["Nombre_Plato"].unique()
             
-            st.subheader("💳 Métodos de Pago")
-            df_pay = df_p.groupby("Metodo_Pago_Loyverse")["Total_Dinero"].sum().reset_index()
-            fig_p = px.pie(df_pay, values="Total_Dinero", names="Metodo_Pago_Loyverse", hole=0.4)
-            st.plotly_chart(fig_p, use_container_width=True)
-            
-        else: st.info("No hay datos para mostrar en el Dashboard.")
-
-    # === TAB 2: ESTRATEGIA (BCG) ===
-    with tab2:
-        if not df_p.empty:
-            df_bcg = df_p.groupby("Nombre_Plato").agg(Und=('Cantidad_Vendida','sum'), Venta=('Total_Dinero','sum')).reset_index()
-            # Limpieza
-            df_bcg = df_bcg[df_bcg["Venta"] > 0]
-            
-            df_bcg["Precio"] = df_bcg["Venta"] / df_bcg["Und"]
-            df_bcg["Costo"] = df_bcg["Nombre_Plato"].map(dict_costos).fillna(0)
-            df_bcg["Margen"] = df_bcg["Precio"] - df_bcg["Costo"]
-            
-            # Solo mostramos BCG si hay costos cargados
-            if df_bcg["Costo"].sum() > 0:
-                avg_u = df_bcg["Und"].mean()
-                avg_m = df_bcg["Margen"].mean()
-                
-                def clasif(r):
-                    if r["Und"]>=avg_u and r["Margen"]>=avg_m: return "⭐ ESTRELLA"
-                    if r["Und"]>=avg_u: return "🐄 VACA LECHERA"
-                    if r["Margen"]>=avg_m: return "🧩 INCÓGNITA"
-                    return "🐕 HUESO"
-                
-                df_bcg["Cat"] = df_bcg.apply(clasif, axis=1)
-                
-                fig_b = px.scatter(df_bcg, x="Margen", y="Und", color="Cat", size="Venta", hover_name="Nombre_Plato",
-                                   color_discrete_map={"⭐ ESTRELLA":"#f1c40f", "🐄 VACA LECHERA":"#2ecc71", "🧩 INCÓGNITA":"#3498db", "🐕 HUESO":"#e74c3c"})
-                fig_b.add_vline(x=avg_m, line_dash="dash"); fig_b.add_hline(y=avg_u, line_dash="dash")
-                st.plotly_chart(fig_b, use_container_width=True)
-                
-                st.dataframe(df_bcg[["Nombre_Plato", "Cat", "Margen", "Und", "Venta"]].sort_values("Venta", ascending=False), use_container_width=True)
+            if len(productos_sin_costo) > 0:
+                st.error(f"⚠️ ALERTA DE COSTOS: Hay {len(productos_sin_costo)} productos vendidos que tienen COSTO $0.")
+                st.caption("Esto infla artificialmente tu utilidad. Crea las recetas para estos productos:")
+                with st.expander("Ver productos sin receta"):
+                    st.dataframe(pd.DataFrame(productos_sin_costo, columns=["Producto sin Costo"]), use_container_width=True)
             else:
-                st.warning("⚠️ No se puede generar la Matriz BCG porque **no hay costos configurados** en Recetas/Insumos.")
-                st.info("Sin embargo, puedes ver el Dashboard de Ventas en la Pestaña 1.")
+                st.success("✅ Excelente: Todos los productos vendidos tienen receta y costo asignado.")
 
-    # === TAB 3: EQUILIBRIO ===
-    with tab3:
-        # Editor Gastos
-        with st.expander("📝 Editar Gastos Fijos", expanded=False):
-            df_ed = st.data_editor(df_gastos, num_rows="dynamic", use_container_width=True, key="ed_gastos")
-            if st.button("💾 Guardar Gastos"):
-                if guardar_gastos_fijos(sheet, df_ed):
-                    st.cache_data.clear(); st.success("Guardado"); time.sleep(1); st.rerun()
-        
-        total_fijos = df_ed["Valor ($)"].sum()
-        
-        # Margen Global
-        margen_global = 0.35
-        if 'df_bcg' in locals() and not df_bcg.empty and df_bcg["Costo"].sum() > 0:
-            tv = df_bcg["Venta"].sum()
-            tc = (df_bcg["Costo"] * df_bcg["Und"]).sum()
-            if tv > 0: margen_global = (tv - tc) / tv
+            st.markdown("---")
             
-        pe_mensual = total_fijos / margen_global if margen_global > 0 else 0
-        pe_diario = pe_mensual / 30
-        
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Gastos Fijos", formato_moneda_co(total_fijos))
-        c2.metric("Meta Mensual", formato_moneda_co(pe_mensual))
-        c3.metric("Meta Diaria", formato_moneda_co(pe_diario))
-        
-        # Progreso
-        v_prom = df_p.groupby(df_p["Fecha"].dt.date)["Total_Dinero"].sum().mean() if not df_p.empty else 0
-        st.write(f"Venta Promedio Actual: **{formato_moneda_co(v_prom)}**")
-        if pe_diario > 0:
-            pct = min(v_prom / pe_diario, 1.0)
-            st.progress(pct, text=f"Cubrimiento: {pct*100:.1f}%")
+            # Gráfico de Cascada
+            df_diario = df_p.groupby(df_p["Fecha"].dt.date).agg({"Total_Dinero": "sum", "Costo_Total_Venta": "sum"}).reset_index()
+            df_diario["Utilidad_Bruta"] = df_diario["Total_Dinero"] - df_diario["Costo_Total_Venta"]
+            
+            fig_util = go.Figure()
+            fig_util.add_trace(go.Bar(x=df_diario["Fecha"], y=df_diario["Total_Dinero"], name="Ventas", marker_color="#2ecc71"))
+            fig_util.add_trace(go.Bar(x=df_diario["Fecha"], y=df_diario["Costo_Total_Venta"], name="Costo Insumos", marker_color="#e74c3c"))
+            fig_util.add_trace(go.Scatter(x=df_diario["Fecha"], y=df_diario["Utilidad_Bruta"], name="Ganancia Bruta", line=dict(color='blue', width=3)))
+            
+            fig_util.update_layout(title="Dinero que entra vs. Dinero que cuesta (Por Día)", barmode='group')
+            st.plotly_chart(fig_util, use_container_width=True)
+
+    # --- TAB 2: DASHBOARD ---
+    with tab_dash:
+        if not df_p.empty:
+            k1, k2 = st.columns(2)
+            k1.metric("Tickets", df_p["Numero_Recibo"].nunique())
+            
+            g1, g2 = st.columns(2)
+            with g1:
+                st.caption("Mapa de Calor")
+                df_h = df_p.groupby(["Dia_Index", "Dia_Semana", "Hora_Num"])["Total_Dinero"].sum().reset_index().sort_values("Dia_Index")
+                st.plotly_chart(px.density_heatmap(df_h, x="Hora_Num", y="Dia_Semana", z="Total_Dinero", color_continuous_scale="Magma"), use_container_width=True)
+            with g2:
+                st.caption("Métodos de Pago")
+                df_pay = df_p.groupby("Metodo_Pago_Loyverse")["Total_Dinero"].sum().reset_index()
+                st.plotly_chart(px.pie(df_pay, values="Total_Dinero", names="Metodo_Pago_Loyverse", hole=0.4), use_container_width=True)
+
+    # --- TAB 3: PUNTO DE EQUILIBRIO ---
+    with tab_pe:
+        st.subheader("Metas de Venta")
+        if total_gastos_fijos_mensual > 0:
+            margen_global_pct = 0.35
+            if not df_p.empty:
+                v_tot = df_p["Total_Dinero"].sum()
+                c_tot = df_p["Costo_Total_Venta"].sum()
+                if v_tot > 0: margen_global_pct = (v_tot - c_tot) / v_tot
+
+            pe_mensual = total_gastos_fijos_mensual / margen_global_pct if margen_global_pct > 0 else 0
+            pe_diario = pe_mensual / 30
+            
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Gastos Fijos", formato_moneda_co(total_gastos_fijos_mensual))
+            c2.metric("Margen Global", f"{margen_global_pct*100:.1f}%")
+            c3.metric("META DIARIA", formato_moneda_co(pe_diario))
+            
+            if not df_p.empty:
+                prom_real = df_p.groupby(df_p["Fecha"].dt.date)["Total_Dinero"].sum().mean() or 0
+                st.write(f"Promedio Actual: **{formato_moneda_co(prom_real)}**")
+                st.progress(min(prom_real / pe_diario, 1.0) if pe_diario > 0 else 0)
+        else:
+            st.warning("Configura tus Gastos Fijos en 'Financiero'.")

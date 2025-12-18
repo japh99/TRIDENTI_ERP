@@ -1,76 +1,103 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
-from utils import conectar_google_sheets
+import subprocess
+from utils import conectar_google_sheets, leer_datos_seguro
 
 HOJA_CONFIG = "DB_CONFIG"
 
 def guardar_parametro(sheet, parametro, valor):
-    """Busca si el parámetro existe y lo actualiza, o lo crea."""
     try:
         ws = sheet.worksheet(HOJA_CONFIG)
-        # Buscar en la columna A (Parametro)
-        celda = ws.find(parametro)
-        
-        if celda:
-            # Si existe, actualizamos la celda de al lado (Columna B)
-            ws.update_cell(celda.row, 2, str(valor))
-        else:
-            # Si no existe, lo agregamos al final
-            ws.append_row([parametro, str(valor)])
+        cell = ws.find(parametro)
+        if cell: ws.update_cell(cell.row, 2, str(valor))
+        else: ws.append_row([parametro, str(valor)])
         return True
-    except Exception as e:
-        st.error(f"Error guardando configuración: {e}")
-        return False
+    except: return False
 
 def obtener_config(sheet):
-    """Lee toda la configuración y la devuelve como diccionario."""
     try:
         ws = sheet.worksheet(HOJA_CONFIG)
         data = ws.get_all_records()
-        # Convertir lista de dicts a un solo dict {Parametro: Valor}
         return {row["Parametro"]: row["Valor"] for row in data}
-    except:
-        return {}
+    except: return {}
 
 def show(sheet):
     st.title("⚙️ Configuración del Sistema")
+    st.caption("Ajustes generales y conexiones.")
     st.markdown("---")
     
     if not sheet: return
+    config = obtener_config(sheet)
 
-    # Cargar configuración actual
-    config_actual = obtener_config(sheet)
-    
-    st.subheader("📅 Estrategia de Lanzamiento")
-    st.info("Define la fecha exacta en la que inicias el control real de inventario (Día Cero).")
-    
-    # Obtener fecha guardada o usar hoy por defecto
-    fecha_guardada_str = config_actual.get("FECHA_LANZAMIENTO", str(date.today()))
-    try:
-        fecha_default = datetime.strptime(fecha_guardada_str, "%Y-%m-%d").date()
-    except:
-        fecha_default = date.today()
+    tab1, tab2, tab3 = st.tabs(["🏢 GENERAL", "🚀 OPERACIÓN", "☁️ SINCRONIZACIÓN"])
 
-    col1, col2 = st.columns([1, 2])
-    
-    with col1:
-        nueva_fecha = st.date_input("Fecha de 'Go Live' (Inicio Operativo)", value=fecha_default)
+    # --- TAB 1: IDENTIDAD ---
+    with tab1:
+        st.subheader("Identidad del Negocio")
         
-        if st.button("💾 GUARDAR FECHA DE LANZAMIENTO", type="primary"):
+        col1, col2 = st.columns(2)
+        actual_nombre = config.get("EMPRESA_NOMBRE", "TRIDENTI V7")
+        actual_tema = config.get("MODO_OSCURO", "Auto")
+        
+        nuevo_nombre = col1.text_input("Nombre de la Empresa", value=actual_nombre)
+        nuevo_tema = col2.selectbox("Tema Visual", ["Auto", "Dark (Oscuro)", "Light (Claro)"], index=0 if "Auto" in actual_tema else (1 if "Dark" in actual_tema else 2))
+        
+        if st.button("💾 Guardar Identidad", type="primary"):
+            guardar_parametro(sheet, "EMPRESA_NOMBRE", nuevo_nombre)
+            guardar_parametro(sheet, "MODO_OSCURO", nuevo_tema)
+            st.success("Configuración actualizada. Recarga la página para ver cambios.")
+            st.rerun()
+
+    # --- TAB 2: OPERACIÓN (FECHAS) ---
+    with tab2:
+        st.subheader("Estrategia de Lanzamiento")
+        st.info("Define cuándo empieza tu inventario real.")
+        
+        fecha_guardada = config.get("FECHA_LANZAMIENTO", str(date.today()))
+        try: fecha_def = datetime.strptime(fecha_guardada, "%Y-%m-%d").date()
+        except: fecha_def = date.today()
+        
+        nueva_fecha = st.date_input("Fecha de 'Go Live' (Inventario)", value=fecha_def)
+        
+        if st.button("💾 Guardar Fecha Operativa"):
             if guardar_parametro(sheet, "FECHA_LANZAMIENTO", nueva_fecha):
-                st.success(f"✅ Sistema configurado. El inventario solo se descontará a partir del {nueva_fecha}.")
-                st.balloons()
-            else:
-                st.error("No se pudo guardar.")
+                st.success(f"Inventario bloqueado para fechas anteriores al {nueva_fecha}.")
 
-    with col2:
-        st.write("### ¿Qué hace esto?")
-        st.caption(f"""
-        1. **Modo Histórico:** Cualquier venta anterior al **{nueva_fecha}** será tratada solo como estadística (sin descontar inventario).
-        2. **Modo Operativo:** A partir del **{nueva_fecha}**, el botón de 'Explosión de Materiales' se activará para descontar stock real.
+        # Espacio para el link de Looker si decides volver a usarlo
+        st.markdown("---")
+        st.write("#### 📊 Enlaces Externos")
+        link_looker = config.get("LINK_LOOKER", "")
+        nuevo_link = st.text_input("Link Reporte Looker Studio (Opcional)", value=link_looker)
+        if st.button("Guardar Link"):
+            guardar_parametro(sheet, "LINK_LOOKER", nuevo_link)
+            st.success("Guardado.")
+
+    # --- TAB 3: SINCRONIZACIÓN (LA SOLUCIÓN) ---
+    with tab3:
+        st.subheader("Conexión con Loyverse")
+        
+        st.info("""
+        **¿Cuándo usar este botón?**
+        1. Cuando crees productos nuevos en Loyverse.
+        2. Cuando cambies precios o nombres.
+        3. Cuando elimines productos.
+        
+        Esto actualiza la base de datos interna para que las Recetas y Ventas funcionen bien.
         """)
-
-    st.markdown("---")
-    with st.expander("🔧 Ver parámetros técnicos"):
-        st.json(config_actual)
+        
+        col_btn, col_res = st.columns([1, 2])
+        
+        with col_btn:
+            if st.button("🔄 SINCRONIZAR MENÚ AHORA", type="primary"):
+                with st.status("Conectando con la nube...", expanded=True) as status:
+                    st.write("Descargando catálogo de productos...")
+                    try:
+                        # Ejecutamos el script independiente
+                        subprocess.run(["python", "sincronizar_loyverse.py"], check=True)
+                        status.update(label="¡Sincronización Exitosa!", state="complete", expanded=False)
+                        st.balloons()
+                        st.success("✅ La base de datos de productos está al día.")
+                    except Exception as e:
+                        status.update(label="Error", state="error")
+                        st.error(f"Fallo al ejecutar el script: {e}")
