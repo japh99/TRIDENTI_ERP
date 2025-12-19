@@ -21,16 +21,12 @@ st.set_page_config(page_title="Tridenti ERP", page_icon="🔱", layout="wide", i
 # --- CREDENCIALES ---
 USUARIOS = {"admin": "1234", "cocina": "0000"}
 
-# --- GESTOR DE COOKIES (CORREGIDO: SIN CACHÉ) ---
-# Hemos eliminado @st.cache_resource para quitar el cuadro amarillo
-def get_manager():
-    return stx.CookieManager()
-
+# --- GESTOR DE COOKIES ---
+def get_manager(): return stx.CookieManager()
 cookie_manager = get_manager()
 
-# --- ESTADO DE NAVEGACIÓN ---
-if "menu_index" not in st.session_state:
-    st.session_state["menu_index"] = 0
+# --- NAVEGACIÓN ---
+if "menu_index" not in st.session_state: st.session_state["menu_index"] = 0
 
 def ir_a(indice):
     st.session_state["menu_index"] = indice
@@ -52,7 +48,7 @@ def login_form(sheet):
         st.markdown("<br><br>", unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown("<h1 style='text-align: center; color: #c5a065;'>🔱 TRIDENTI</h1>", unsafe_allow_html=True)
-            st.markdown("<p style='text-align: center; color: #888;'>Sistema de Gestión Integral V7</p>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center;'>Sistema de Gestión Integral V7</p>", unsafe_allow_html=True)
             st.markdown("---")
             usuario = st.selectbox("Perfil", ["Seleccionar...", "Gerencia (Admin)", "Operación (Cocina)"])
             password = st.text_input("Contraseña", type="password")
@@ -61,87 +57,83 @@ def login_form(sheet):
                 if usuario != "Seleccionar..." and password == USUARIOS.get(user_key):
                     st.session_state["usuario_valido"] = True
                     st.session_state["rol_actual"] = usuario
-                    # Cookie dura 7 días
                     cookie_manager.set("tridenti_user", usuario, expires_at=datetime.now() + timedelta(days=7))
                     registrar_acceso(sheet, usuario, user_key)
                     st.rerun()
                 else: st.error("Error de credenciales")
 
-# --- DASHBOARD HOME ---
+# --- DASHBOARD HOME REDISEÑADO ---
 def show_dashboard_home():
     st.markdown(f"## 👋 Bienvenido, {st.session_state['rol_actual'].split(' ')[0]}")
-    st.markdown("---")
-
-    col1, col2, col3, col4 = st.columns(4)
-
-    with col1:
-        with st.container(border=True):
-            st.markdown("### 💡 Inteligencia")
-            st.caption("KPIs y Análisis")
-            if st.button("Ir a Inteligencia", use_container_width=True): ir_a(1)
-    
-    with col2:
-        with st.container(border=True):
-            st.markdown("### 🚀 Estrategia")
-            st.caption("Matriz BCG")
-            if st.button("Ir a Matriz BCG", use_container_width=True): ir_a(2)
-
-    with col3:
-        with st.container(border=True):
-            st.markdown("### 🏦 Financiero")
-            st.caption("Gastos Fijos")
-            if st.button("Ir a Financiero", use_container_width=True): ir_a(3)
-
-    with col4:
-        with st.container(border=True):
-            st.markdown("### 🔐 Tesorería")
-            st.caption("Cierre de Caja")
-            if st.button("Ir a Tesorería", use_container_width=True): ir_a(4)
-
+    st.markdown("Selecciona un módulo para gestionar tu negocio:")
     st.write("")
 
+    # COLUMNA 1: ESTRATEGIA (Dorado)
+    st.markdown("<h4 class='gold-text'>🏆 ESTRATEGIA & FINANZAS</h4>", unsafe_allow_html=True)
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        if st.button("💡 INTELIGENCIA\n\nKPIs y Análisis", use_container_width=True): ir_a(1)
+    with c2:
+        if st.button("🚀 MATRIZ BCG\n\nRentabilidad Platos", use_container_width=True): ir_a(2)
+    with c3:
+        if st.button("🏦 FINANCIERO\n\nGastos Fijos", use_container_width=True): ir_a(3)
+    with c4:
+        if st.button("🔐 TESORERÍA\n\nCierre de Caja", use_container_width=True): ir_a(4)
+
+    st.markdown("---")
+
+    # COLUMNA 2: OPERACIÓN (Rojo)
+    st.markdown("<h4 class='red-text'>⚙️ OPERACIÓN DIARIA</h4>", unsafe_allow_html=True)
     c5, c6, c7, c8 = st.columns(4)
-
     with c5:
-        with st.container(border=True):
-            st.markdown("### 📉 Ventas")
-            st.caption("Historial Diario")
-            if st.button("Ir a Ventas", use_container_width=True): ir_a(5)
-
+        if st.button("📉 VENTAS\n\nHistorial Diario", use_container_width=True): ir_a(5)
     with c6:
-        with st.container(border=True):
-            st.markdown("### 📦 Inventario")
-            st.caption("Kardex y Explosión")
-            if st.button("Ir a Inventario", use_container_width=True): ir_a(6)
-
+        if st.button("📦 INVENTARIO\n\nKardex y Explosión", use_container_width=True): ir_a(6)
     with c7:
-        with st.container(border=True):
-            st.markdown("### 🛒 Compras")
-            st.caption("Facturas Prov.")
-            if st.button("Ir a Compras", use_container_width=True): ir_a(8)
-
+        if st.button("🛒 COMPRAS\n\nRegistro Facturas", use_container_width=True): ir_a(8)
     with c8:
-        with st.container(border=True):
-            st.markdown("### 👨‍🍳 Recetas")
-            st.caption("Fichas Técnicas")
-            if st.button("Ir a Recetas", use_container_width=True): ir_a(12)
+        if st.button("💸 GASTOS\n\nCaja Menor", use_container_width=True): ir_a(9)
+    
+    # Botón extra para Sugeridos (no cabía en la fila de 4)
+    c_sug, _, _, _ = st.columns(4)
+    with c_sug:
+        if st.button("📋 SUGERIDOS\n\n¿Qué comprar?", use_container_width=True): ir_a(7)
 
+    st.markdown("---")
+
+    # COLUMNA 3: INGENIERÍA (Azul/Gris)
+    st.markdown("<h4 class='blue-text'>🧠 INGENIERÍA & CONTROL</h4>", unsafe_allow_html=True)
+    c9, c10, c11, c12 = st.columns(4)
+    with c9:
+        if st.button("👨‍🍳 RECETAS\n\nFichas Técnicas", use_container_width=True): ir_a(12)
+    with c10:
+        if st.button("📦 INSUMOS\n\nMaestro Productos", use_container_width=True): ir_a(10)
+    with c11:
+        if st.button("🥣 SUB-RECETAS\n\nSalsas y Preps", use_container_width=True): ir_a(11)
+    with c12:
+        if st.button("🤝 PROVEEDORES\n\nDirectorio CRM", use_container_width=True): ir_a(14)
+    
+    # Fila extra ingeniería
+    c13, c14, c15, _ = st.columns(4)
+    with c13:
+        if st.button("🛠️ ACTIVOS\n\nMantenimiento", use_container_width=True): ir_a(13)
+    with c14:
+        if st.button("⚙️ CONFIG\n\nAjustes", use_container_width=True): ir_a(17)
+
+# --- MAIN ---
 def main():
     styles.cargar_estilos()
     
     sheet = conectar_google_sheets()
     if not sheet: st.error("Error BD"); return
 
-    # Login Logic
+    # Login
     if "usuario_valido" not in st.session_state: st.session_state["usuario_valido"] = False
-    
-    # Intento de auto-login por cookie
     if not st.session_state["usuario_valido"]:
         try:
-            cookie = cookie_manager.get("tridenti_user")
-            if cookie:
+            if cookie_manager.get("tridenti_user"):
                 st.session_state["usuario_valido"] = True
-                st.session_state["rol_actual"] = cookie
+                st.session_state["rol_actual"] = cookie_manager.get("tridenti_user")
                 time.sleep(0.1); st.rerun()
         except: pass
     
@@ -149,10 +141,8 @@ def main():
         login_form(sheet)
         return
 
-    # --- SISTEMA ---
     rol = st.session_state["rol_actual"]
     nombre_app = "TRIDENTI V7"
-    
     try:
         df_c = leer_datos_seguro(sheet.worksheet("DB_CONFIG"))
         if not df_c.empty:
@@ -161,28 +151,16 @@ def main():
     except: pass
 
     with st.sidebar:
-        st.title(nombre_app)
+        if st.button("🏠 INICIO", type="primary", use_container_width=True): ir_a(0)
+        st.markdown(f"### {nombre_app}")
         
         if rol == "Gerencia (Admin)":
             opciones = [
-                "Inicio",           # 0
-                "Inteligencia",     # 1
-                "Matriz BCG",       # 2
-                "Financiero",       # 3
-                "Tesoreria",        # 4
-                "Ventas",           # 5
-                "Inventario",       # 6
-                "Sugeridos",        # 7
-                "Compras",          # 8
-                "Gastos",           # 9
-                "Insumos",          # 10
-                "Sub-Recetas",      # 11
-                "Recetas",          # 12
-                "Activos",          # 13
-                "Proveedores",      # 14
-                "Auditoría",        # 15
-                "Reportar Daño",    # 16
-                "Configuración"     # 17
+                "Inicio",
+                "Inteligencia", "Matriz BCG", "Financiero", "Tesoreria",
+                "Ventas", "Inventario", "Sugeridos", "Compras", "Gastos",
+                "Insumos", "Sub-Recetas", "Recetas", "Activos", "Proveedores",
+                "Auditoría", "Reportar Daño", "Configuración"
             ]
             iconos = [
                 "house", "lightbulb", "stars", "bank", "safe",
@@ -192,12 +170,17 @@ def main():
             ]
             
             selected = option_menu(
-                menu_title="Panel de Control",
+                menu_title=None,
                 options=opciones,
                 icons=iconos,
                 menu_icon="list",
                 default_index=st.session_state["menu_index"],
-                styles={"nav-link-selected": {"background-color": "#580f12"}}
+                styles={
+                    "nav-link-selected": {"background-color": "#580f12"},
+                    "container": {"padding": "0!important", "background-color": "#111"},
+                    "icon": {"color": "#c5a065", "font-size": "14px"}, 
+                    "nav-link": {"font-size": "14px", "text-align": "left", "margin":"0px"}
+                }
             )
             
             try:
@@ -206,10 +189,8 @@ def main():
                     st.session_state["menu_index"] = idx
                     st.rerun()
             except: pass
-
         else:
-            opciones = ["Reportar Daño", "Auditoría"]
-            selected = option_menu(menu_title=None, options=opciones, icons=["exclamation-triangle", "check-circle"], default_index=0)
+            selected = option_menu(menu_title="Operación", options=["Reportar Daño", "Auditoría"], icons=["exclamation-triangle", "check-circle"], default_index=0)
         
         st.markdown("---")
         if st.button("🔒 SALIR"):
@@ -217,7 +198,7 @@ def main():
             st.session_state["usuario_valido"] = False
             st.rerun()
 
-    # --- ROUTER ---
+    # ROUTER
     if selected == "Inicio": show_dashboard_home()
     elif selected == "Inteligencia": inteligencia.show(sheet)
     elif selected == "Matriz BCG": matriz_bcg.show(sheet)
