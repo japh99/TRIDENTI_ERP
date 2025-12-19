@@ -15,7 +15,6 @@ import time
 ID_CARPETA_DRIVE = "1OYsctJyo75JlZm9MLiAfTuHKtvq1bpF6"
 ZONA_HORARIA = pytz.timezone('America/Bogota')
 
-# --- CLOUDINARY ---
 cloudinary.config( 
   cloud_name = "deilmyfio", 
   api_key = "487111251418656", 
@@ -23,12 +22,9 @@ cloudinary.config(
   secure = True
 )
 
-# --- HERRAMIENTAS ---
 def limpiar_numero(valor):
     if not valor: return 0.0
-    if isinstance(valor, (int, float)): return float(valor)
-    texto = str(valor).replace('$', '').replace(',', '').strip()
-    try: return float(texto)
+    try: return float(str(valor).replace('$', '').replace(',', '').strip())
     except: return 0.0
 
 def generar_id():
@@ -41,16 +37,10 @@ def leer_datos_seguro(hoja):
             data = hoja.get_all_values()
             if len(data) < 2: return pd.DataFrame()
             headers = [str(h).strip() for h in data[0]]
-            rows = data[1:]
-            df = pd.DataFrame(rows, columns=headers)
-            df = df.loc[:, df.columns != '']
-            return df
+            return pd.DataFrame(data[1:], columns=headers)
         except Exception as e:
-            if "429" in str(e):
-                time.sleep(2 * (i + 1))
-                continue
-            else:
-                return pd.DataFrame()
+            if "429" in str(e): time.sleep(2 * (i+1)); continue
+            return pd.DataFrame()
     return pd.DataFrame()
 
 def limpiar_cache():
@@ -58,38 +48,48 @@ def limpiar_cache():
 
 @st.cache_resource(ttl=600)
 def conectar_google_sheets():
+    scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    creds_dict = None
+    
     try:
-        json_creds = os.environ.get('GCP_SERVICE_ACCOUNT')
-        if not json_creds: return None
-        creds_dict = json.loads(json_creds)
-        scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+        # INTENTO 1: Buscar en secrets.toml (Streamlit Cloud)
+        if "GCP" in st.secrets:
+            # Leer el string y convertirlo a JSON
+            json_str = st.secrets["GCP"]["GCP_SERVICE_ACCOUNT"]
+            creds_dict = json.loads(json_str)
+        
+        # INTENTO 2: Variable de entorno (Backup)
+        elif os.environ.get('GCP_SERVICE_ACCOUNT'):
+            creds_dict = json.loads(os.environ.get('GCP_SERVICE_ACCOUNT'))
+
+        if not creds_dict:
+            st.error("❌ No se encontraron las credenciales [GCP] en Secrets.")
+            return None
+
+        # CORRECCIÓN DE LA LLAVE PRIVADA
+        # A veces el copy-paste rompe los saltos de línea (\n)
+        if "private_key" in creds_dict:
+            creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+
+        # CONEXIÓN
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        return client.open("TRIDENTI_DB_V7")
+        
+        # INTENTO DE ABRIR LA HOJA
+        # Esto confirmará si el robot tiene permiso
+        sheet = client.open("TRIDENTI_DB_V7")
+        return sheet
+
     except Exception as e:
-        st.error(f"Error Conexión: {e}")
+        # ESTO ES LO QUE NECESITAMOS VER:
+        st.error(f"🔥 ERROR TÉCNICO DETALLADO: {e}")
         return None
 
-# --- SUBIDA FOTOS (MEJORADA PARA CARPETAS PRINCIPALES) ---
 def subir_foto_drive(archivo, subcarpeta=None, carpeta_raiz="TRIDENTI_FACTURAS"):
-    """
-    Sube archivos a Cloudinary.
-    - carpeta_raiz: La carpeta principal (Por defecto TRIDENTI_FACTURAS, pero puede ser COSTOS_FIJOS)
-    - subcarpeta: La subcategoría (ej: NOMINA, INTERNET)
-    """
     try:
-        hoy_co = datetime.now(ZONA_HORARIA)
-        meses = {1:"01-Ene", 2:"02-Feb", 3:"03-Mar", 4:"04-Abr", 5:"05-May", 6:"06-Jun", 7:"07-Jul", 8:"08-Ago", 9:"09-Sep", 10:"10-Oct", 11:"11-Nov", 12:"12-Dic"}
-        
-        # Ruta Estructurada: CARPETA_RAIZ / AÑO / MES / DIA / SUBCARPETA
-        ruta = f"{carpeta_raiz}/{hoy_co.year}/{meses[hoy_co.month]}/{hoy_co.day:02d}"
-        
-        if subcarpeta:
-            ruta += f"/{subcarpeta}"
-            
-        nombre = f"SOPORTE_{hoy_co.strftime('%H%M%S')}_{archivo.name.split('.')[0]}"
-        
-        res = cloudinary.uploader.upload(archivo, folder=ruta, public_id=nombre, resource_type="auto")
+        hoy = datetime.now(ZONA_HORARIA)
+        ruta = f"{carpeta_raiz}/{hoy.year}/{hoy.strftime('%m-%b')}/{hoy.day:02d}"
+        if subcarpeta: ruta += f"/{subcarpeta}"
+        res = cloudinary.uploader.upload(archivo, folder=ruta, resource_type="auto")
         return res.get("secure_url")
-    except Exception as e:
-        return f"Error Cloudinary: {e}"
+    except Exception as e: return f"Error Cloudinary: {e}"
