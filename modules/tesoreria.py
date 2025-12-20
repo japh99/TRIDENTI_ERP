@@ -26,7 +26,7 @@ def formato_moneda_co(valor):
     try: return f"$ {int(float(valor)):,}".replace(",", ".")
     except: return "$ 0"
 
-# --- FUNCIONES ---
+# --- FUNCIONES DE MANTENIMIENTO ---
 
 def obtener_o_crear_hoja(sheet, nombre, headers):
     try: return sheet.worksheet(nombre)
@@ -49,7 +49,10 @@ def asegurar_columnas(ws):
                 next_col += 1
     except: pass
 
+# --- FUNCIONES DE CARGA ---
+
 def cargar_datos_ahorro(sheet):
+    """Carga entradas (Cierres) y salidas (Retiros)."""
     try:
         ws_c = obtener_o_crear_hoja(sheet, HOJA_CIERRES, HEADERS_CIERRE)
         df_c = leer_datos_seguro(ws_c)
@@ -74,6 +77,12 @@ def verificar_cierre_existente(sheet, fecha_str):
             if not cierre.empty: return cierre.iloc[0]
         return None
     except: return None
+
+def cargar_historial_completo(sheet):
+    try:
+        ws = sheet.worksheet(HOJA_CIERRES)
+        return leer_datos_seguro(ws)
+    except: return pd.DataFrame()
 
 def reabrir_caja(sheet, fecha_str):
     try:
@@ -128,19 +137,6 @@ def registrar_retiro_profit(sheet, monto, motivo, responsable):
         return True
     except: return False
 
-def pagar_ahorro_pendiente(sheet, fecha_pago):
-    try:
-        ws = sheet.worksheet(HOJA_CIERRES)
-        fechas = ws.col_values(1)
-        try: idx = fechas.index(str(fecha_pago)) + 1 
-        except: return False
-        headers = ws.row_values(1)
-        try: c_idx = headers.index("Estado_Ahorro") + 1
-        except: c_idx = 10
-        ws.update_cell(idx, c_idx, "GUARDADO")
-        return True
-    except: return False
-
 def actualizar_metodos_pago(ws_ventas, df_editado):
     try:
         col_recibos = ws_ventas.col_values(3)
@@ -168,6 +164,22 @@ def guardar_cierre(sheet, datos_dict):
             else: fila.append(str(val))
         ws.append_row(fila)
         return True
+    except Exception as e:
+        st.error(f"Error guardando: {e}")
+        return False
+
+def pagar_ahorro_pendiente(sheet, fecha_pago):
+    try:
+        ws = sheet.worksheet(HOJA_CIERRES)
+        fechas = ws.col_values(1)
+        try: idx = fechas.index(str(fecha_pago)) + 1 
+        except: return False
+        
+        headers = ws.row_values(1)
+        try: c_idx = headers.index("Estado_Ahorro") + 1
+        except: c_idx = 10
+        ws.update_cell(idx, c_idx, "GUARDADO")
+        return True
     except: return False
 
 # --- INTERFAZ ---
@@ -175,25 +187,23 @@ def guardar_cierre(sheet, datos_dict):
 def show(sheet):
     st.title("🔐 Tesorería Central")
     st.markdown("---")
-    
     if not sheet: return
 
-    # --- AQUÍ ESTABA EL ERROR: Definir tabs antes de usarlos ---
     tab_caja, tab_ahorro = st.tabs(["📝 GESTIÓN DE CAJA", "🐷 BANCO DE AHORRO"])
 
-    # TAB 1: CAJA
+    # === TAB 1: CAJA DEL DÍA ===
     with tab_caja:
         hoy = datetime.now(ZONA_HORARIA).date()
         col_f, col_s = st.columns([1, 2])
-        fecha_cierre = col_f.date_input("Fecha", value=hoy)
+        fecha_cierre = col_f.date_input("Fecha de Arqueo", value=hoy)
         fecha_str = fecha_cierre.strftime("%Y-%m-%d")
 
         datos_cierre = verificar_cierre_existente(sheet, fecha_str)
 
+        # MODO LECTURA (YA CERRADO)
         if datos_cierre is not None:
-            # MODO LECTURA
             z = datos_cierre.get("Numero_Cierre_Loyverse", "S/N")
-            with col_s: st.success(f"✅ **DÍA CERRADO** (Z: {z})")
+            with col_s: st.success(f"✅ **DÍA CERRADO** (Z-Report: #{z})")
             
             teorico = float(limpiar_numero(datos_cierre.get("Saldo_Teorico_Efectivo", 0)))
             real = float(limpiar_numero(datos_cierre.get("Saldo_Real_Contado", 0)))
@@ -205,13 +215,14 @@ def show(sheet):
             c2.metric("Se Contó", formato_moneda_co(real))
             c3.metric("Diferencia", formato_moneda_co(diff), delta_color="off")
             
-            st.info(f"🐷 Ahorro del día: **{formato_moneda_co(profit)}** ({datos_cierre.get('Estado_Ahorro','-')})")
+            st.info(f"🐷 Ahorro guardado: **{formato_moneda_co(profit)}** ({datos_cierre.get('Estado_Ahorro','-')})")
+            st.text_area("Notas:", value=datos_cierre.get("Notas", ""), disabled=True)
             
             if st.button("🗑️ REABRIR CAJA", type="secondary"):
                 if reabrir_caja(sheet, fecha_str): st.success("Reabierto."); time.sleep(1); st.rerun()
 
+        # MODO EDICIÓN (ABIERTO)
         else:
-            # MODO EDICIÓN
             with col_s: st.warning("⚠️ **PENDIENTE**")
             df_ventas, df_g, df_c, ws_ventas = cargar_movimientos(sheet, fecha_str)
 
@@ -229,7 +240,6 @@ def show(sheet):
                     if st.button("💾 Guardar Correcciones"):
                         if actualizar_metodos_pago(ws_ventas, df_edit): st.success("Listo."); st.rerun()
 
-                # Cálculos
                 v_total = df_ventas["Total_Dinero"].sum()
                 v_efec = df_ventas[df_ventas["Metodo_Pago_Real_Auditado"] == "Efectivo"]["Total_Dinero"].sum()
                 v_digi = df_ventas[df_ventas["Metodo_Pago_Real_Auditado"].str.contains("Nequi|Davi|Banco|Transf", case=False, na=False)]["Total_Dinero"].sum()
@@ -248,17 +258,22 @@ def show(sheet):
             k4.metric("Tarjetas", formato_moneda_co(v_tarj))
             
             st.markdown("---")
-            c_p1, c_p2 = st.columns([1, 2])
-            pct_prof = c_p1.number_input("% Ahorro", value=5, min_value=1)
-            monto_p = v_total * (pct_prof/100)
-            c_p2.info(f"👉 Ahorrar: **{formato_moneda_co(monto_p)}**")
             
-            # --- CORRECCIÓN AQUÍ: Selector en vez de Checkbox ---
-            estado_ahorro_sel = st.radio("Estado de la Transferencia:", 
-                                         ["🔴 PENDIENTE (Debo transferir luego)", "🟢 GUARDADO (Ya transferí)"],
-                                         horizontal=True)
+            # --- PROFIT FIRST FLEXIBLE ---
+            st.subheader("💰 Fondo de Ahorro")
+            
+            # Calculadora de sugerencia
+            c_p1, c_p2 = st.columns([1, 2])
+            pct_prof = c_p1.number_input("% Sugerido", value=5, min_value=0)
+            sugerido = v_total * (pct_prof/100)
+            
+            with c_p2:
+                # CAMPO EDITABLE PARA EL AHORRO REAL
+                monto_p_real = st.number_input("💵 Monto a Ahorrar HOY (Editable)", value=float(sugerido), step=1000.0)
+                estado_ahorro_sel = st.radio("Estado:", ["🔴 PENDIENTE (Debo transferir luego)", "🟢 GUARDADO (Ya transferí)"], horizontal=True)
 
             st.markdown("---")
+            # Arqueo
             c1, c2, c3 = st.columns(3)
             c1.metric("(+) Entradas", formato_moneda_co(v_efec))
             c2.metric("(-) Salidas", formato_moneda_co(g_efec + c_efec))
@@ -273,13 +288,16 @@ def show(sheet):
                 elif diff > 0: st.info(f"🔵 SOBRA: {formato_moneda_co(diff)}")
                 else: st.error(f"🔴 FALTA: {formato_moneda_co(diff)}")
 
+            st.markdown("---")
             c_z, c_nota = st.columns([1, 2])
             num_z = c_z.text_input("🧾 N° Cierre Loyverse (Z)", placeholder="#1024")
             not_cierre = c_nota.text_area("Notas")
             
             if st.button("🔒 CERRAR CAJA", type="primary", use_container_width=True):
                 est_ahorro = "GUARDADO" if "🟢" in estado_ahorro_sel else "PENDIENTE"
-                
+                # Si el monto es 0, no hay deuda
+                if monto_p_real == 0: est_ahorro = "N/A"
+
                 datos_dict = {
                     "Fecha": fecha_str,
                     "Hora_Cierre": datetime.now(ZONA_HORARIA).strftime("%H:%M"),
@@ -287,18 +305,43 @@ def show(sheet):
                     "Gastos_Pagados_Efectivo": g_efec + c_efec,
                     "Saldo_Teorico_Efectivo": saldo_teorico, "Saldo_Real_Contado": real,
                     "Diferencia": diff, "Total_Nequi": v_digi, "Total_Tarjetas": v_tarj,
-                    "Notas": not_cierre, "Profit_Retenido": monto_p, "Estado_Ahorro": est_ahorro,
+                    "Notas": not_cierre, 
+                    "Profit_Retenido": monto_p_real, # Guardamos el valor manual
+                    "Estado_Ahorro": est_ahorro,
                     "Numero_Cierre_Loyverse": str(num_z)
                 }
                 if guardar_cierre(sheet, datos_dict):
                     st.balloons(); st.success("Guardado."); st.cache_data.clear(); time.sleep(2); st.rerun()
 
-    # TAB 2: AHORRO
+        # HISTORIAL PERMANENTE (SIEMPRE VISIBLE)
+        st.markdown("---")
+        st.subheader("📜 Historial de Cierres")
+        df_full = cargar_historial_completo(sheet)
+        if not df_full.empty:
+            df_ver = df_full.copy()
+            # Asegurar columnas
+            if "Numero_Cierre_Loyverse" not in df_ver.columns: df_ver["Numero_Cierre_Loyverse"] = "-"
+            
+            # Formatos visuales
+            for col in ["Saldo_Real_Contado", "Diferencia", "Profit_Retenido"]:
+                if col in df_ver.columns:
+                    df_ver[col] = pd.to_numeric(df_ver[col], errors='coerce').apply(formato_moneda_co)
+
+            st.dataframe(
+                df_ver[["Fecha", "Numero_Cierre_Loyverse", "Saldo_Real_Contado", "Diferencia", "Profit_Retenido", "Notas"]].sort_values("Fecha", ascending=False),
+                use_container_width=True,
+                hide_index=True
+            )
+
+    # ==========================
+    # TAB 2: BANCO DE AHORRO
+    # ==========================
     with tab_ahorro:
-        st.subheader("🐷 Banco de Ahorro")
+        st.subheader("🐷 Fondo de Reservas")
         df_c, df_r = cargar_datos_ahorro(sheet)
         
         if not df_c.empty:
+            # Calcular Totales
             total_guardado = df_c[df_c["Estado_Ahorro"] == "GUARDADO"]["Profit_Retenido"].sum()
             total_retirado = df_r["Monto_Retirado"].sum() if not df_r.empty else 0
             saldo_banco = total_guardado - total_retirado
@@ -306,37 +349,57 @@ def show(sheet):
             total_deuda = df_c[df_c["Estado_Ahorro"] == "PENDIENTE"]["Profit_Retenido"].sum()
             
             k1, k2, k3 = st.columns(3)
-            k1.metric("💰 Saldo Disponible", formato_moneda_co(saldo_banco))
-            k2.metric("📥 Total Ahorrado", formato_moneda_co(total_guardado))
-            k3.metric("⚠️ Pendiente", formato_moneda_co(total_deuda), delta_color="inverse")
+            k1.metric("💰 Alcancía Total", formato_moneda_co(saldo_banco), help="Lo que realmente tienes en el banco.")
+            k2.metric("📥 Aportes Totales", formato_moneda_co(total_guardado))
+            k3.metric("📤 Retiros Totales", formato_moneda_co(total_retirado))
             
+            if total_deuda > 0:
+                st.error(f"⚠️ Tienes **{formato_moneda_co(total_deuda)}** pendientes por transferir.")
+
             st.markdown("---")
-            c_p, c_r = st.columns(2)
-            
-            with c_p:
-                st.markdown("### 🟠 Pagar Pendientes")
+
+            # COLUMNAS DE ACCIÓN
+            col_in, col_out = st.columns(2)
+
+            with col_in:
+                st.markdown("#### 🟠 Pagar Deudas")
                 pendientes = df_c[df_c["Estado_Ahorro"] == "PENDIENTE"]
                 if not pendientes.empty:
-                    lista = pendientes.apply(lambda x: f"{x['Fecha']} - {formato_moneda_co(x['Profit_Retenido'])}", axis=1).tolist()
-                    pago = st.selectbox("Pagar:", lista)
+                    # Crear lista legible: FECHA - MONTO
+                    opciones = pendientes.apply(lambda x: f"{x['Fecha']} - {formato_moneda_co(x['Profit_Retenido'])}", axis=1).tolist()
+                    pago_sel = st.selectbox("Selecciona día a transferir:", opciones)
+                    
                     if st.button("✅ YA HICE LA TRANSFERENCIA"):
-                        if pagar_ahorro_pendiente(sheet, pago.split(" - ")[0]):
-                            st.success("Registrado."); st.cache_data.clear(); time.sleep(1); st.rerun()
-                else: st.success("¡Al día!")
+                        fecha_pago = pago_sel.split(" - ")[0]
+                        if pagar_ahorro_pendiente(sheet, fecha_pago):
+                            st.success("¡Excelente! Ahorro registrado."); st.cache_data.clear(); time.sleep(1); st.rerun()
+                else:
+                    st.success("🎉 ¡Estás al día con tus ahorros!")
 
-            with c_r:
-                st.markdown("### 💸 Retirar")
-                m_ret = st.number_input("Monto", min_value=0.0, step=50000.0)
-                mot = st.text_input("Motivo")
+            with col_out:
+                st.markdown("#### 💸 Retirar Fondos")
+                monto_ret = st.number_input("Monto a Retirar", min_value=0.0, step=50000.0)
+                motivo = st.text_input("Motivo del Retiro")
                 resp = st.text_input("Responsable")
-                if st.button("🚨 RETIRAR", type="primary"):
-                    if m_ret <= saldo_banco and m_ret > 0:
-                        if registrar_retiro_profit(sheet, m_ret, mot, resp):
-                            st.success("Retiro OK."); st.cache_data.clear(); time.sleep(1); st.rerun()
-                    else: st.error("Fondos insuficientes.")
-            
+                
+                if st.button("🚨 REGISTRAR RETIRO", type="primary"):
+                    if monto_ret <= saldo_banco and monto_ret > 0:
+                        if registrar_retiro_profit(sheet, monto_ret, motivo, resp):
+                            st.success("Retiro registrado."); st.cache_data.clear(); time.sleep(1); st.rerun()
+                    else: st.error("Fondos insuficientes o monto inválido.")
+
+            # TABLAS DE HISTORIAL
             st.markdown("---")
-            t1, t2 = st.tabs(["Entradas", "Salidas"])
-            with t1: st.dataframe(df_c[["Fecha", "Profit_Retenido", "Estado_Ahorro"]].sort_values("Fecha", ascending=False), use_container_width=True)
-            with t2: st.dataframe(df_r, use_container_width=True)
+            t1, t2 = st.tabs(["📜 Entradas (Ahorros)", "📤 Salidas (Retiros)"])
+            
+            with t1:
+                df_show = df_c[df_c["Profit_Retenido"] > 0].copy()
+                df_show["Profit_Retenido"] = df_show["Profit_Retenido"].apply(formato_moneda_co)
+                st.dataframe(df_show[["Fecha", "Profit_Retenido", "Estado_Ahorro"]].sort_values("Fecha", ascending=False), use_container_width=True)
+            
+            with t2:
+                if not df_r.empty:
+                    df_r["Monto_Retirado"] = df_r["Monto_Retirado"].apply(formato_moneda_co)
+                    st.dataframe(df_r[["Fecha", "Monto_Retirado", "Motivo", "Responsable"]].sort_values("Fecha", ascending=False), use_container_width=True)
+                else: st.info("No hay retiros.")
         else: st.info("Sin datos.")
