@@ -8,138 +8,122 @@ def cargar_estilos():
 
         :root {
             --bg-app: #fdf0d5;        /* Fondo Crema */
-            --primary: #780000;       /* Vino Tinto (Botones/Títulos) */
-            --accent: #c1121f;        /* Rojo Vivo (Hover/Alertas) */
-            --secondary: #003049;     /* Azul Prusiano (Texto fuerte/Bordes) */
-            --text-main: #000000;     /* Negro (Texto lectura) */
-            --bg-card: #ffffff;       /* Blanco (Tarjetas) */
+            --primary: #780000;       /* Vino Tinto */
+            --accent: #c1121f;        /* Rojo Vivo */
+            --secondary: #003049;     /* Azul Prusiano */
+            --text-main: #000000;     /* NEGRO PURO (Para lectura) */
+            --bg-card: #ffffff;       /* Blanco */
         }
 
-        html, body, [class*="css"] {
+        /* --- 2. FORZADO DE MODO CLARO (CRÍTICO PARA MÓVIL) --- */
+        
+        /* Esto obliga a que TODO el texto sea oscuro, ignorando el modo noche del iPhone/Android */
+        html, body, [class*="css"], .stMarkdown, .stText, p, div, span, label, h1, h2, h3, h4, h5, h6 {
             font-family: 'Poppins', sans-serif;
             color: var(--text-main) !important;
-            background-color: var(--bg-app) !important;
+            background-color: transparent; /* Evita parches negros */
         }
 
-        /* --- 2. FONDO GENERAL --- */
+        /* Fondo de la App */
         .stApp {
             background-color: var(--bg-app) !important;
         }
 
         /* --- 3. BARRA LATERAL (SIDEBAR) --- */
         section[data-testid="stSidebar"] {
-            background-color: var(--bg-card) !important; /* Blanco para contraste */
-            border-right: 2px solid var(--secondary); /* Borde Azul Prusiano */
+            background-color: var(--bg-card) !important;
+            border-right: 2px solid var(--secondary);
         }
         
-        /* Títulos del sidebar */
-        [data-testid="stSidebar"] h1 {
-            color: var(--primary) !important;
-            text-shadow: 1px 1px 0px rgba(0,0,0,0.1);
-        }
-        [data-testid="stSidebar"] p, [data-testid="stSidebar"] span {
+        /* Textos del Sidebar específicamente */
+        section[data-testid="stSidebar"] p, 
+        section[data-testid="stSidebar"] span,
+        section[data-testid="stSidebar"] div {
             color: var(--secondary) !important;
-            font-weight: 500;
         }
 
-        /* --- 4. TÍTULOS --- */
+        /* --- 4. TÍTULOS DE COLOR --- */
+        /* Sobreescribimos el color negro solo para títulos grandes */
         h1, h2, h3 {
-            color: var(--primary) !important; /* Vino Tinto */
+            color: var(--primary) !important;
             font-weight: 800 !important;
         }
-        h4, h5, h6 {
-            color: var(--secondary) !important; /* Azul Prusiano */
+        h4, h5 {
+            color: var(--secondary) !important;
         }
 
-        /* --- 5. BOTONES TIPO TARJETA (DASHBOARD) --- */
+        /* --- 5. TARJETAS DEL DASHBOARD --- */
         div.stButton > button {
             background-color: var(--bg-card) !important;
             color: var(--secondary) !important; /* Texto Azul */
-            border: 1px solid var(--secondary) !important;
-            border-left: 6px solid var(--primary) !important; /* Borde Izq Vino */
+            border: 2px solid var(--secondary) !important;
+            border-left: 6px solid var(--primary) !important;
             border-radius: 12px;
             padding: 15px;
-            transition: all 0.3s ease;
             box-shadow: 0 4px 6px rgba(0, 48, 73, 0.1);
-            text-align: center;
-            height: 100%;
-            width: 100%;
-            font-weight: 700;
+            font-weight: 700 !important;
         }
 
         div.stButton > button:hover {
-            transform: translateY(-4px);
-            background-color: var(--primary) !important; /* Fondo Vino al pasar mouse */
-            color: #fdf0d5 !important; /* Texto Crema */
+            transform: translateY(-3px);
+            background-color: var(--primary) !important;
+            color: #fdf0d5 !important; /* Texto claro al pasar mouse */
             border-color: var(--primary) !important;
-            box-shadow: 0 8px 15px rgba(120, 0, 0, 0.3);
         }
         
-        div.stButton > button:active {
-            background-color: var(--accent) !important; /* Rojo vivo al clic */
+        div.stButton > button p {
+            color: inherit !important; /* Heredar color del botón */
         }
 
-        /* --- 6. BOTONES DE ACCIÓN (PRIMARY) --- */
-        /* Botones como "Guardar", "Cerrar Caja" */
+        /* --- 6. BOTONES PRIMARIOS (ACCIONES) --- */
         button[kind="primary"] {
             background: linear-gradient(135deg, var(--primary), var(--accent)) !important;
-            color: #ffffff !important;
+            color: #ffffff !important; /* Blanco solo para botones de acción */
             border: none !important;
-            border-radius: 8px !important;
-            box-shadow: 0 4px 0 var(--secondary) !important; /* Sombra dura Azul */
-        }
-        button[kind="primary"]:hover {
-            transform: scale(1.02);
-            box-shadow: 0 6px 0 var(--secondary) !important;
-        }
-
-        /* --- 7. TARJETAS DE MÉTRICAS (KPIs) --- */
-        div[data-testid="stMetric"] {
-            background-color: var(--bg-card);
-            border: 1px solid rgba(0, 48, 73, 0.1);
-            border-radius: 10px;
-            padding: 15px;
-            border-left: 5px solid var(--secondary); /* Borde Azul */
-            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
-        }
-        div[data-testid="stMetricLabel"] { color: var(--secondary) !important; font-weight: 600; }
-        div[data-testid="stMetricValue"] { color: var(--primary) !important; font-size: 1.8rem; }
-
-        /* --- 8. TABLAS (DATAFRAMES) --- */
-        div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
-            border: 2px solid var(--secondary);
-            border-radius: 8px;
-            background-color: white;
-            box-shadow: 4px 4px 0px rgba(0, 48, 73, 0.1);
+            box-shadow: 0 4px 0 var(--secondary) !important;
         }
         
-        /* Encabezados de tabla */
+        /* Corrección de texto dentro de botones primarios */
+        button[kind="primary"] p {
+            color: #ffffff !important;
+        }
+
+        /* --- 7. INPUTS (CAJAS DE TEXTO) --- */
+        /* Fondo blanco y letra negra obligatoria */
+        input, textarea, select {
+            background-color: #ffffff !important;
+            color: #000000 !important;
+            border: 1px solid var(--secondary) !important;
+        }
+        
+        /* El texto dentro de los selectbox también */
+        div[data-baseweb="select"] span {
+            color: #000000 !important;
+        }
+
+        /* --- 8. TABLAS --- */
+        div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
+            background-color: white !important;
+            border: 2px solid var(--secondary);
+            border-radius: 10px;
+        }
+        
         thead tr th {
             background-color: var(--secondary) !important;
-            color: #ffffff !important; /* Texto Blanco */
-            font-weight: bold;
+            color: #ffffff !important;
         }
         
-        /* Filas */
-        tbody tr:nth-child(even) {
-            background-color: #f8f9fa;
-        }
-
-        /* --- 9. INPUTS --- */
-        input, select, textarea {
+        tbody td {
+            color: #000000 !important;
             background-color: #ffffff !important;
-            color: var(--text-main) !important;
-            border: 1px solid var(--secondary) !important;
-            border-radius: 6px;
-        }
-        
-        /* Focus en Inputs */
-        div[data-baseweb="input"]:focus-within {
-            border-color: var(--accent) !important;
-            box-shadow: 0 0 0 2px rgba(193, 18, 31, 0.2) !important;
         }
 
-        /* Ocultar adornos de Streamlit */
+        /* --- 9. MENSAJES (Alertas) --- */
+        .stAlert {
+            color: #000000 !important;
+        }
+
+        /* Ocultar footer */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         header {visibility: hidden;}
