@@ -3,6 +3,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import os
 import json
+import base64
 import uuid
 import pandas as pd
 from datetime import datetime
@@ -15,12 +16,15 @@ import time
 ID_CARPETA_DRIVE = "1OYsctJyo75JlZm9MLiAfTuHKtvq1bpF6"
 ZONA_HORARIA = pytz.timezone('America/Bogota')
 
-cloudinary.config( 
-  cloud_name = "deilmyfio", 
-  api_key = "487111251418656", 
-  api_secret = "FYldB0cZfK2XC_6DpQGIn1MIyhE", 
-  secure = True
-)
+# Configurar Cloudinary con bloque de seguridad
+try:
+    cloudinary.config( 
+      cloud_name = "deilmyfio", 
+      api_key = "487111251418656", 
+      api_secret = "FYldB0cZfK2XC_6DpQGIn1MIyhE", 
+      secure = True
+    )
+except: pass
 
 def limpiar_numero(valor):
     if not valor: return 0.0
@@ -31,24 +35,15 @@ def generar_id():
     return str(uuid.uuid4().hex)[:5].upper()
 
 def leer_datos_seguro(hoja):
-    """Intenta leer hasta 5 veces si Google está ocupado (Error 429)"""
-    max_intentos = 5
-    for i in range(max_intentos):
+    for i in range(3):
         try:
             data = hoja.get_all_values()
             if len(data) < 2: return pd.DataFrame()
             headers = [str(h).strip() for h in data[0]]
-            # Crear DF solo con columnas que tengan nombre
-            df = pd.DataFrame(data[1:], columns=headers)
-            df = df.loc[:, df.columns != '']
-            return df
+            return pd.DataFrame(data[1:], columns=headers)
         except Exception as e:
-            if "429" in str(e) or "Quota" in str(e):
-                # Espera progresiva: 2s, 4s, 6s...
-                time.sleep(2 * (i + 1))
-                continue
-            else:
-                return pd.DataFrame()
+            if "429" in str(e): time.sleep(2); continue
+            return pd.DataFrame()
     return pd.DataFrame()
 
 def limpiar_cache():
@@ -60,51 +55,62 @@ def conectar_google_sheets():
     creds_dict = None
     
     try:
-        # 1. Recuperar Credenciales (Soporta Streamlit Cloud y Local)
-        if "GCP" in st.secrets:
-            json_str = st.secrets["GCP"]["GCP_SERVICE_ACCOUNT"]
-            creds_dict = json.loads(json_str)
-        elif os.environ.get('GCP_SERVICE_ACCOUNT'):
-             creds_dict = json.loads(os.environ.get('GCP_SERVICE_ACCOUNT'))
+        # ---------------------------------------------------------
+        # ESTRATEGIA 1: Variable Base64 (Ideal para Render)
+        # ---------------------------------------------------------
+        b64_key = os.environ.get("GCP_B64")
+        if b64_key:
+            try:
+                # Limpiar comillas si se colaron
+                b64_key = b64_key.strip().strip('"').strip("'")
+                json_str = base64.b64decode(b64_key).decode("utf-8")
+                creds_dict = json.loads(json_str)
+            except Exception as e:
+                print(f"Error decodificando B64: {e}")
 
+        # ---------------------------------------------------------
+        # ESTRATEGIA 2: Variable JSON Directa (Plan B)
+        # ---------------------------------------------------------
         if not creds_dict:
-            st.error("❌ No se encontraron las credenciales [GCP] en Secrets.")
+            json_raw = os.environ.get("GCP_SERVICE_ACCOUNT")
+            if json_raw:
+                try: creds_dict = json.loads(json_raw)
+                except: pass
+
+        # ---------------------------------------------------------
+        # ESTRATEGIA 3: Secrets Locales (Solo si existe el archivo)
+        # ---------------------------------------------------------
+        if not creds_dict:
+            try:
+                # Verificamos si existe el atributo secrets antes de llamarlo
+                if hasattr(st, "secrets") and "GCP" in st.secrets:
+                    creds_dict = json.loads(st.secrets["GCP"]["GCP_SERVICE_ACCOUNT"])
+            except: pass
+
+        # ---------------------------------------------------------
+        # CONEXIÓN FINAL
+        # ---------------------------------------------------------
+        if not creds_dict:
+            # Si llegamos aquí, no hay llaves. No rompemos la app, solo avisamos.
+            st.error("⚠️ Error: No se encontraron credenciales de Google.")
             return None
 
-        # Corrección de llave privada
+        # Arreglo de saltos de línea para llaves privadas
         if "private_key" in creds_dict:
             creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
 
-        # Autenticación
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
-        
-        # 2. INTENTO DE CONEXIÓN CON REINTENTOS (ANTI-ERROR 429)
-        for i in range(5):
-            try:
-                sheet = client.open("TRIDENTI_DB_V7")
-                return sheet
-            except Exception as e:
-                # Si es error de cuota, esperar y reintentar
-                if "429" in str(e) or "Quota" in str(e):
-                    time.sleep(2 + i)
-                    continue
-                else:
-                    raise e # Si es otro error, lanzarlo
-                    
-        return None
+        return client.open("TRIDENTI_DB_V7")
 
     except Exception as e:
-        # Solo mostrar el error si es crítico, para no asustar
-        if "429" not in str(e):
-            st.error(f"🔥 Error Técnico: {e}")
+        st.error(f"❌ Error Conexión: {e}")
         return None
 
 def subir_foto_drive(archivo, subcarpeta=None, carpeta_raiz="TRIDENTI_FACTURAS"):
     try:
-        hoy_co = datetime.now(ZONA_HORARIA)
-        meses = {1:"01-Ene", 2:"02-Feb", 3:"03-Mar", 4:"04-Abr", 5:"05-May", 6:"06-Jun", 7:"07-Jul", 8:"08-Ago", 9:"09-Sep", 10:"10-Oct", 11:"11-Nov", 12:"12-Dic"}
-        ruta = f"{carpeta_raiz}/{hoy_co.year}/{meses[hoy_co.month]}/{hoy_co.day:02d}"
+        hoy = datetime.now(ZONA_HORARIA)
+        ruta = f"{carpeta_raiz}/{hoy.year}/{hoy.strftime('%m-%b')}/{hoy.day:02d}"
         if subcarpeta: ruta += f"/{subcarpeta}"
         res = cloudinary.uploader.upload(archivo, folder=ruta, resource_type="auto")
         return res.get("secure_url")
