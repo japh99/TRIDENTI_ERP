@@ -9,8 +9,8 @@ from utils import conectar_google_sheets, leer_datos_seguro, ZONA_HORARIA
 # --- IMPORTACIÓN DE MÓDULOS ---
 from modules import (
     styles,
-    inteligencia, matriz_bcg, financiero, tesoreria, ventas, 
-    inventario, sugerido, compras, gastos, 
+    inteligencia, matriz_bcg, financiero, tesoreria, banco_profit, # <--- NUEVO MÓDULO
+    ventas, inventario, sugerido, compras, gastos, 
     insumos, subrecetas, recetas, activos, proveedores, 
     auditoria_inv, bajas, configuracion
 )
@@ -27,7 +27,6 @@ cookie_manager = get_manager()
 
 # --- NAVEGACIÓN ---
 if "menu_index" not in st.session_state: st.session_state["menu_index"] = 0
-
 def ir_a(indice):
     st.session_state["menu_index"] = indice
     st.rerun()
@@ -47,8 +46,8 @@ def login_form(sheet):
     with c2:
         st.markdown("<br><br>", unsafe_allow_html=True)
         with st.container(border=True):
-            st.markdown("<h1 style='text-align: center; color: #780000;'>🔱 TRIDENTI</h1>", unsafe_allow_html=True)
-            st.markdown("<p style='text-align: center; color: #003049;'>Sistema de Gestión Integral V7</p>", unsafe_allow_html=True)
+            st.markdown("<h1 style='text-align: center; color: #c5a065;'>🔱 TRIDENTI</h1>", unsafe_allow_html=True)
+            st.markdown("<p style='text-align: center; color: #888;'>Sistema de Gestión Integral V7</p>", unsafe_allow_html=True)
             st.markdown("---")
             usuario = st.selectbox("Perfil", ["Seleccionar...", "Gerencia (Admin)", "Operación (Cocina)"])
             password = st.text_input("Contraseña", type="password")
@@ -68,39 +67,97 @@ def show_dashboard_home():
     st.markdown("### Selecciona un módulo:")
     st.write("")
 
-    col1, col2, col3 = st.columns(3)
+    # FILA 1: ESTRATEGIA & DINERO
+    st.markdown("#### 💰 ESTRATEGIA Y FINANZAS")
+    c1, c2, c3, c4, c5 = st.columns(5) # AHORA SON 5 COLUMNAS
+    with c1:
+        with st.container(border=True):
+            st.markdown("**Inteligencia**")
+            st.caption("KPIs")
+            if st.button("Ir a Intel.", use_container_width=True): ir_a(1)
+    with c2:
+        with st.container(border=True):
+            st.markdown("**Matriz BCG**")
+            st.caption("Estrategia")
+            if st.button("Ir a BCG", use_container_width=True): ir_a(2)
+    with c3:
+        with st.container(border=True):
+            st.markdown("**Financiero**")
+            st.caption("Gastos Fijos")
+            if st.button("Ir a Finan.", use_container_width=True): ir_a(3)
+    with c4:
+        with st.container(border=True):
+            st.markdown("**Tesorería**")
+            st.caption("Cierre Caja")
+            if st.button("Ir a Caja", use_container_width=True): ir_a(4)
+    with c5:
+        with st.container(border=True):
+            st.markdown("**Banco Profit**")
+            st.caption("Ahorros")
+            if st.button("Ir a Banco", use_container_width=True): ir_a(5)
 
-    with col1:
-        st.markdown("#### 💰 ESTRATEGIA Y FINANZAS")
-        st.info("Control gerencial y flujo de caja.")
-        if st.button("💡 Inteligencia de Negocios", use_container_width=True): ir_a(1)
-        if st.button("🚀 Matriz BCG (Rentabilidad)", use_container_width=True): ir_a(2)
-        if st.button("🏦 Financiero (Gastos Fijos)", use_container_width=True): ir_a(3)
-        if st.button("🔐 Tesorería (Cierre de Caja)", use_container_width=True): ir_a(4)
+    st.write("")
 
-    with col2:
-        st.markdown("#### ⚙️ OPERACIÓN DIARIA")
-        st.warning("Movimientos del día a día.")
-        if st.button("📉 Ventas (Historial)", use_container_width=True): ir_a(5)
-        if st.button("📦 Inventario (Kardex)", use_container_width=True): ir_a(6)
-        if st.button("🛒 Sugerido de Compras", use_container_width=True): ir_a(7)
-        if st.button("🛍️ Registro de Compras", use_container_width=True): ir_a(8)
-        if st.button("💸 Gastos (Caja Menor)", use_container_width=True): ir_a(9)
+    # FILA 2: OPERACIÓN
+    st.markdown("#### ⚙️ OPERACIÓN DIARIA")
+    c6, c7, c8, c9, c10 = st.columns(5)
+    with c6:
+        with st.container(border=True):
+            st.markdown("**Ventas**")
+            st.caption("Historial")
+            if st.button("Ir a Ventas", use_container_width=True): ir_a(6)
+    with c7:
+        with st.container(border=True):
+            st.markdown("**Inventario**")
+            st.caption("Kardex")
+            if st.button("Ir a Inv.", use_container_width=True): ir_a(7)
+    with c8:
+        with st.container(border=True):
+            st.markdown("**Sugeridos**")
+            st.caption("Pedidos")
+            if st.button("Ir a Suger.", use_container_width=True): ir_a(8)
+    with c9:
+        with st.container(border=True):
+            st.markdown("**Compras**")
+            st.caption("Facturas")
+            if st.button("Ir a Compra", use_container_width=True): ir_a(9)
+    with c10:
+        with st.container(border=True):
+            st.markdown("**Gastos**")
+            st.caption("Caja Menor")
+            if st.button("Ir a Gastos", use_container_width=True): ir_a(10)
 
-    with col3:
-        st.markdown("#### 🧠 INGENIERÍA Y CONTROL")
-        st.success("Configuración y mantenimiento.")
-        if st.button("📦 Maestro de Insumos", use_container_width=True): ir_a(10)
-        if st.button("🥣 Sub-Recetas (Salsas)", use_container_width=True): ir_a(11)
-        if st.button("👨‍🍳 Recetas (Fichas Técnicas)", use_container_width=True): ir_a(12)
-        if st.button("🛠️ Activos (Mantenimiento)", use_container_width=True): ir_a(13)
-        if st.button("🤝 Proveedores (CRM)", use_container_width=True): ir_a(14)
-        if st.button("⚙️ Configuración", use_container_width=True): ir_a(17)
+    st.write("")
 
-    st.markdown("---")
-    st.caption("🔱 Tridenti ERP V7.5 - Sistema Estable")
+    # FILA 3: INGENIERÍA
+    st.markdown("#### 🧠 INGENIERÍA Y CONTROL")
+    c11, c12, c13, c14, c15 = st.columns(5)
+    with c11:
+        with st.container(border=True):
+            st.markdown("**Insumos**")
+            st.caption("Maestro")
+            if st.button("Ir a Insumos", use_container_width=True): ir_a(11)
+    with c12:
+        with st.container(border=True):
+            st.markdown("**Sub-Recetas**")
+            st.caption("Salsas")
+            if st.button("Ir a Subs", use_container_width=True): ir_a(12)
+    with c13:
+        with st.container(border=True):
+            st.markdown("**Recetas**")
+            st.caption("Fichas")
+            if st.button("Ir a Recetas", use_container_width=True): ir_a(13)
+    with c14:
+        with st.container(border=True):
+            st.markdown("**Activos**")
+            st.caption("Mto.")
+            if st.button("Ir a Activos", use_container_width=True): ir_a(14)
+    with c15:
+        with st.container(border=True):
+            st.markdown("**Config**")
+            st.caption("Ajustes")
+            if st.button("Ir a Config", use_container_width=True): ir_a(18)
 
-# --- MAIN ---
 def main():
     styles.cargar_estilos()
     
@@ -108,6 +165,7 @@ def main():
     if not sheet: st.error("Error BD"); return
 
     if "usuario_valido" not in st.session_state: st.session_state["usuario_valido"] = False
+    
     if not st.session_state["usuario_valido"]:
         try:
             if cookie_manager.get("tridenti_user"):
@@ -131,43 +189,46 @@ def main():
 
     with st.sidebar:
         if st.button("🏠 INICIO", type="primary", use_container_width=True): ir_a(0)
-        st.markdown(f"### {nombre_app}")
-        st.caption(f"👤 {rol}")
+        st.markdown("---")
+        st.title(nombre_app)
         
         if rol == "Gerencia (Admin)":
             opciones = [
-                "Inicio",
-                "Inteligencia", "Matriz BCG", "Financiero", "Tesoreria",
-                "Ventas", "Inventario", "Sugeridos", "Compras", "Gastos",
-                "Insumos", "Sub-Recetas", "Recetas", "Activos", "Proveedores",
-                "Auditoría", "Reportar Daño", "Configuración"
+                "Inicio",           # 0
+                "Inteligencia",     # 1
+                "Matriz BCG",       # 2
+                "Financiero",       # 3
+                "Tesoreria",        # 4
+                "Banco Profit",     # 5 <--- NUEVO
+                "Ventas",           # 6
+                "Inventario",       # 7
+                "Sugeridos",        # 8
+                "Compras",          # 9
+                "Gastos",           # 10
+                "Insumos",          # 11
+                "Sub-Recetas",      # 12
+                "Recetas",          # 13
+                "Activos",          # 14
+                "Proveedores",      # 15
+                "Auditoría",        # 16
+                "Reportar Daño",    # 17
+                "Configuración"     # 18
             ]
             iconos = [
-                "house", "lightbulb", "stars", "bank", "safe",
-                "graph-up-arrow", "clipboard-data", "cart-check", "cart4", "wallet2",
-                "box-seam", "fire", "journal-text", "tools", "people",
-                "check-circle", "exclamation-triangle", "gear"
+                "house", 
+                "lightbulb", "stars", "bank", "safe", "piggy-bank", # Estrategia
+                "graph-up-arrow", "clipboard-data", "cart-check", "cart4", "wallet2", # Operación
+                "box-seam", "fire", "journal-text", "tools", "people", # Ingeniería
+                "check-circle", "exclamation-triangle", "gear"  # Control
             ]
             
-            # ESTILOS DEL MENÚ AJUSTADOS A LA NUEVA PALETA
             selected = option_menu(
-                menu_title="Panel de Control",
+                menu_title=None,
                 options=opciones,
                 icons=iconos,
                 menu_icon="list",
                 default_index=st.session_state["menu_index"],
-                styles={
-                    "container": {"padding": "0!important", "background-color": "#ffffff"}, # Fondo Blanco
-                    "icon": {"color": "#003049", "font-size": "14px"}, # Icono Azul Prusiano
-                    "nav-link": {
-                        "font-size": "14px", 
-                        "text-align": "left", 
-                        "margin":"0px", 
-                        "color": "#000000", # Texto Negro
-                        "--hover-color": "#fdf0d5" # Hover Crema
-                    },
-                    "nav-link-selected": {"background-color": "#780000", "color": "white"}, # Selección Vino Tinto
-                }
+                styles={"nav-link-selected": {"background-color": "#580f12"}}
             )
             
             try:
@@ -186,25 +247,26 @@ def main():
             st.session_state["usuario_valido"] = False
             st.rerun()
 
-    if selected != "Inicio" and rol == "Gerencia (Admin)":
-        if st.button("⬅️ Volver al Panel"): ir_a(0)
-
-    # --- ROUTER ---
+    # --- ROUTER (ÍNDICES ACTUALIZADOS) ---
     if selected == "Inicio": show_dashboard_home()
     elif selected == "Inteligencia": inteligencia.show(sheet)
     elif selected == "Matriz BCG": matriz_bcg.show(sheet)
     elif selected == "Financiero": financiero.show(sheet)
     elif selected == "Tesoreria": tesoreria.show(sheet)
+    elif selected == "Banco Profit": banco_profit.show(sheet) # <--- CONECTADO
+    
     elif selected == "Ventas": ventas.show(sheet)
     elif selected == "Inventario": inventario.show(sheet)
     elif selected == "Sugeridos": sugerido.show(sheet)
     elif selected == "Compras": compras.show(sheet)
     elif selected == "Gastos": gastos.show(sheet)
+    
     elif selected == "Insumos": insumos.show(sheet)
     elif selected == "Sub-Recetas": subrecetas.show(sheet)
     elif selected == "Recetas": recetas.show(sheet)
     elif selected == "Activos": activos.show(sheet)
     elif selected == "Proveedores": proveedores.show(sheet)
+    
     elif selected == "Auditoría": auditoria_inv.show(sheet)
     elif selected == "Reportar Daño": bajas.show(sheet)
     elif selected == "Configuración": configuracion.show(sheet)
