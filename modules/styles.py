@@ -7,13 +7,12 @@ def cargar_estilos():
         @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap');
 
         :root {
-            --primary: #580f12;       /* Vino Tinto */
-            --gold: #c5a065;          /* Dorado */
-            --bg-app: #f9f7f2;        /* BEIGE CREMA SUAVE (Tu pedido) */
-            --bg-sidebar: #ffffff;    /* Blanco para la barra */
-            --bg-card: #ffffff;       /* Blanco para tarjetas */
-            --text-main: #2c1810;     /* Café muy oscuro (Casi negro) para leer bien */
-            --text-light: #5d4037;    /* Café suave para subtítulos */
+            --bg-app: #fdf0d5;        /* Fondo Crema */
+            --primary: #780000;       /* Vino Tinto (Botones/Títulos) */
+            --accent: #c1121f;        /* Rojo Vivo (Hover/Alertas) */
+            --secondary: #003049;     /* Azul Prusiano (Texto fuerte/Bordes) */
+            --text-main: #000000;     /* Negro (Texto lectura) */
+            --bg-card: #ffffff;       /* Blanco (Tarjetas) */
         }
 
         html, body, [class*="css"] {
@@ -27,92 +26,120 @@ def cargar_estilos():
             background-color: var(--bg-app) !important;
         }
 
-        /* --- 3. BARRA LATERAL (SIDEBAR) CLARA --- */
+        /* --- 3. BARRA LATERAL (SIDEBAR) --- */
         section[data-testid="stSidebar"] {
-            background-color: var(--bg-sidebar) !important;
-            border-right: 1px solid #e0e0e0;
-            box-shadow: 2px 0 10px rgba(0,0,0,0.05);
+            background-color: var(--bg-card) !important; /* Blanco para contraste */
+            border-right: 2px solid var(--secondary); /* Borde Azul Prusiano */
         }
         
-        div[data-testid="stSidebarNav"] {
-            padding-top: 20px;
-        }
-
-        /* Textos del sidebar */
-        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+        /* Títulos del sidebar */
+        [data-testid="stSidebar"] h1 {
             color: var(--primary) !important;
+            text-shadow: 1px 1px 0px rgba(0,0,0,0.1);
         }
         [data-testid="stSidebar"] p, [data-testid="stSidebar"] span {
-            color: var(--text-main) !important;
+            color: var(--secondary) !important;
+            font-weight: 500;
         }
 
-        /* --- 4. BOTONES TIPO TARJETA (DASHBOARD) --- */
+        /* --- 4. TÍTULOS --- */
+        h1, h2, h3 {
+            color: var(--primary) !important; /* Vino Tinto */
+            font-weight: 800 !important;
+        }
+        h4, h5, h6 {
+            color: var(--secondary) !important; /* Azul Prusiano */
+        }
+
+        /* --- 5. BOTONES TIPO TARJETA (DASHBOARD) --- */
         div.stButton > button {
             background-color: var(--bg-card) !important;
-            color: var(--primary) !important;
-            border: 1px solid #d7ccc8 !important; /* Borde beige oscuro */
-            border-left: 5px solid var(--primary) !important;
+            color: var(--secondary) !important; /* Texto Azul */
+            border: 1px solid var(--secondary) !important;
+            border-left: 6px solid var(--primary) !important; /* Borde Izq Vino */
             border-radius: 12px;
             padding: 15px;
             transition: all 0.3s ease;
-            box-shadow: 0 4px 6px rgba(44, 24, 16, 0.05);
+            box-shadow: 0 4px 6px rgba(0, 48, 73, 0.1);
             text-align: center;
             height: 100%;
             width: 100%;
-            font-weight: 600;
+            font-weight: 700;
         }
 
         div.stButton > button:hover {
             transform: translateY(-4px);
-            box-shadow: 0 10px 15px rgba(88, 15, 18, 0.15);
-            border-color: var(--gold) !important;
-            border-left: 5px solid var(--gold) !important;
-            color: var(--gold) !important;
+            background-color: var(--primary) !important; /* Fondo Vino al pasar mouse */
+            color: #fdf0d5 !important; /* Texto Crema */
+            border-color: var(--primary) !important;
+            box-shadow: 0 8px 15px rgba(120, 0, 0, 0.3);
         }
         
         div.stButton > button:active {
-            background-color: #fce4ec !important;
-            transform: translateY(0px);
+            background-color: var(--accent) !important; /* Rojo vivo al clic */
         }
 
-        /* Botones de Acción Primaria (Guardar, Cerrar) */
+        /* --- 6. BOTONES DE ACCIÓN (PRIMARY) --- */
+        /* Botones como "Guardar", "Cerrar Caja" */
         button[kind="primary"] {
-            background: linear-gradient(135deg, var(--primary), #8a1c21) !important;
-            color: white !important;
+            background: linear-gradient(135deg, var(--primary), var(--accent)) !important;
+            color: #ffffff !important;
             border: none !important;
-            box-shadow: 0 4px 6px rgba(88, 15, 18, 0.3) !important;
+            border-radius: 8px !important;
+            box-shadow: 0 4px 0 var(--secondary) !important; /* Sombra dura Azul */
+        }
+        button[kind="primary"]:hover {
+            transform: scale(1.02);
+            box-shadow: 0 6px 0 var(--secondary) !important;
         }
 
-        /* --- 5. TARJETAS DE MÉTRICAS --- */
+        /* --- 7. TARJETAS DE MÉTRICAS (KPIs) --- */
         div[data-testid="stMetric"] {
             background-color: var(--bg-card);
+            border: 1px solid rgba(0, 48, 73, 0.1);
             border-radius: 10px;
             padding: 15px;
-            border: 1px solid #e0e0e0;
-            border-left: 4px solid var(--gold);
-            box-shadow: 0 2px 4px rgba(44, 24, 16, 0.05);
+            border-left: 5px solid var(--secondary); /* Borde Azul */
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
         }
-        div[data-testid="stMetricLabel"] { color: var(--text-light) !important; }
-        div[data-testid="stMetricValue"] { color: var(--primary) !important; }
+        div[data-testid="stMetricLabel"] { color: var(--secondary) !important; font-weight: 600; }
+        div[data-testid="stMetricValue"] { color: var(--primary) !important; font-size: 1.8rem; }
 
-        /* --- 6. TABLAS --- */
+        /* --- 8. TABLAS (DATAFRAMES) --- */
         div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
-            border: 1px solid #e0e0e0;
+            border: 2px solid var(--secondary);
             border-radius: 8px;
             background-color: white;
+            box-shadow: 4px 4px 0px rgba(0, 48, 73, 0.1);
         }
         
-        /* Texto negro en tablas */
-        td { color: #000000 !important; }
-        th { color: var(--primary) !important; background-color: #f3e9d2 !important; }
-
-        /* --- 7. INPUTS --- */
-        input, select, textarea {
-            background-color: white !important;
-            color: #000000 !important;
-            border: 1px solid #ccc !important;
+        /* Encabezados de tabla */
+        thead tr th {
+            background-color: var(--secondary) !important;
+            color: #ffffff !important; /* Texto Blanco */
+            font-weight: bold;
+        }
+        
+        /* Filas */
+        tbody tr:nth-child(even) {
+            background-color: #f8f9fa;
         }
 
+        /* --- 9. INPUTS --- */
+        input, select, textarea {
+            background-color: #ffffff !important;
+            color: var(--text-main) !important;
+            border: 1px solid var(--secondary) !important;
+            border-radius: 6px;
+        }
+        
+        /* Focus en Inputs */
+        div[data-baseweb="input"]:focus-within {
+            border-color: var(--accent) !important;
+            box-shadow: 0 0 0 2px rgba(193, 18, 31, 0.2) !important;
+        }
+
+        /* Ocultar adornos de Streamlit */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         header {visibility: hidden;}
