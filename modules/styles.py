@@ -10,84 +10,116 @@ def cargar_estilos():
             font-family: 'Poppins', sans-serif;
         }
 
-        /* --- 1. TARJETAS DE INFORMACIÓN (Métricas 3D) --- */
+        /* --- 1. BARRA LATERAL (SIDEBAR) ESTILO PREMIUM --- */
+        /* Estilo para los ítems del menú lateral */
+        [data-testid="stSidebarNav"] ul {
+            padding-left: 1rem;
+            padding-right: 1rem;
+        }
+
+        [data-testid="stSidebarNav"] ul li {
+            border-radius: 15px;
+            margin-bottom: 8px;
+            transition: all 0.3s ease;
+        }
+
+        /* Ítem seleccionado (El efecto guinda con borde dorado) */
+        [data-testid="stSidebarNav"] ul li a[aria-current="page"] {
+            background-color: #580f12 !important; /* Guinda Tridenti */
+            color: white !important;
+            border: 2px solid #c5a065 !important; /* Borde Dorado */
+            border-radius: 15px !important;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+        }
+        
+        /* Iconos del menú en blanco cuando está seleccionado */
+        [data-testid="stSidebarNav"] ul li a[aria-current="page"] span {
+            color: white !important;
+        }
+
+        /* Hover en el menú lateral */
+        [data-testid="stSidebarNav"] ul li:hover {
+            background-color: rgba(197, 160, 101, 0.1);
+            transform: translateX(5px);
+        }
+
+        /* --- 2. TARJETAS DE INICIO (DASHBOARD CARDS) --- */
+        /* Si usas contenedores para el inicio, usa esta clase personalizada */
+        .inicio-card {
+            background-color: white;
+            border-radius: 20px;
+            padding: 25px;
+            border: 2px solid #c5a065; /* Borde Dorado */
+            box-shadow: 0 10px 25px rgba(0,0,0,0.1);
+            text-align: center;
+            transition: all 0.3s ease;
+            margin-bottom: 20px;
+        }
+        
+        .inicio-card:hover {
+            transform: scale(1.03);
+            box-shadow: 0 15px 35px rgba(197, 160, 101, 0.3);
+        }
+
+        /* --- 3. MÉTRICAS (Métricas 3D mejoradas) --- */
         div[data-testid="stMetric"] {
-            background-color: rgba(255, 255, 255, 0.05); /* Fondo sutil translúcido */
-            border: 1px solid rgba(128, 128, 128, 0.2);
-            border-left: 6px solid #c5a065; /* Acento Dorado Tridenti */
-            border-radius: 15px; /* Bordes muy redondos */
-            padding: 15px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1), 0 1px 3px rgba(0, 0, 0, 0.08); /* Sombra suave */
-            transition: transform 0.2s ease;
+            background-color: #ffffff;
+            border: 2px solid #c5a065; /* Borde Dorado */
+            border-radius: 20px !important;
+            padding: 20px !important;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
         }
         
         div[data-testid="stMetric"]:hover {
-            transform: translateY(-2px); /* Se levanta un poco */
-            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.15); /* Sombra más fuerte */
-            border-color: #c5a065;
+            transform: translateY(-5px);
+            border-color: #580f12; /* Cambia a guinda al pasar el mouse */
         }
 
-        /* Texto de las métricas */
-        div[data-testid="stMetricLabel"] { font-size: 0.9rem; font-weight: 600; opacity: 0.8; }
-        div[data-testid="stMetricValue"] { font-size: 2rem; font-weight: 700; color: #D93838; /* Rojo Tridenti */ }
+        div[data-testid="stMetricLabel"] { font-size: 1rem; font-weight: 600; color: #333; }
+        div[data-testid="stMetricValue"] { font-size: 1.8rem; font-weight: 700; color: #580f12; }
 
-        /* --- 2. BOTONES 3D REALES --- */
+        /* --- 4. BOTONES TIPO PIANO (3D) --- */
         div.stButton > button {
+            width: 100%;
             background-color: #ffffff;
-            color: #333333;
-            border: 1px solid #cccccc;
-            border-bottom: 5px solid #aaaaaa; /* EL EFECTO 3D ES ESTE BORDE */
-            border-radius: 12px;
-            padding: 0.5rem 1rem;
+            color: #580f12;
+            border: 2px solid #c5a065;
+            border-bottom: 6px solid #c5a065;
+            border-radius: 15px;
+            padding: 0.8rem 1rem;
             font-weight: 700;
             transition: all 0.1s;
         }
 
-        /* Botón Primario (Rojo) */
         button[kind="primary"] {
             background-color: #580f12 !important;
             color: white !important;
-            border: 1px solid #3a080a !important;
-            border-bottom: 5px solid #2a0506 !important; /* Piso oscuro */
+            border: 2px solid #c5a065 !important;
+            border-bottom: 6px solid #8e6d3d !important;
         }
 
-        /* Efecto al presionar (Hundir) */
         div.stButton > button:active {
-            border-bottom: 1px solid; /* Se quita el piso */
-            transform: translateY(4px); /* Se mueve hacia abajo */
-        }
-        
-        /* Hover */
-        div.stButton > button:hover {
-            border-color: #c5a065 !important; /* Brillo dorado */
+            border-bottom: 2px solid;
+            transform: translateY(4px);
         }
 
-        /* --- 3. CONTENEDORES Y TABLAS --- */
-        /* Bordes redondeados para tablas */
+        /* --- 5. TABLAS Y DF --- */
         div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {
-            border: 1px solid rgba(128, 128, 128, 0.3);
-            border-radius: 12px;
-            overflow: hidden; /* Para que las esquinas no se salgan */
-            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-        }
-
-        /* Tarjetas generales (st.container con borde) */
-        div[data-testid="stVerticalBlockBorderWrapper"] {
+            border: 2px solid #c5a065;
             border-radius: 15px;
-            border: 1px solid rgba(128, 128, 128, 0.2);
-            box-shadow: 0 4px 10px rgba(0,0,0,0.05);
-        }
-
-        /* --- 4. EXPANDERS (Acordeones) --- */
-        .streamlit-expanderHeader {
-            font-weight: 600;
-            border-radius: 8px;
-            background-color: rgba(128, 128, 128, 0.05);
+            overflow: hidden;
         }
 
         /* Limpieza Visual */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
         header {visibility: hidden;}
+        
+        /* Sidebar background */
+        [data-testid="stSidebar"] {
+            background-color: #f8f9fa;
+            border-right: 1px solid #e0e0e0;
+        }
     </style>
     """, unsafe_allow_html=True)
