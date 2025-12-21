@@ -13,7 +13,6 @@ from modules import (
 )
 
 # --- CONFIGURACIÓN DE PÁGINA ---
-# Forzamos que la barra lateral inicie colapsada (y el CSS la ocultará)
 st.set_page_config(
     page_title="Tridenti ERP V7", 
     page_icon="🔱", 
@@ -24,8 +23,7 @@ st.set_page_config(
 # --- CREDENCIALES ---
 USUARIOS = {"admin": "1234", "cocina": "0000"}
 
-# --- GESTOR DE COOKIES (SOLUCIÓN AL ERROR DE CACHÉ) ---
-# Eliminamos el decorador @st.cache_resource
+# --- GESTOR DE COOKIES ---
 def get_cookie_manager():
     return stx.CookieManager()
 
@@ -50,8 +48,8 @@ def dibujar_card(titulo, desc, emoji, indice):
     st.markdown(f"""
         <div class="card-modulo">
             <div style="font-size: 2.5rem; margin-bottom: 10px;">{emoji}</div>
-            <h3 style="margin: 0; color: #580f12; font-size: 1.2rem;">{titulo}</h3>
-            <p style="margin: 5px 0 15px 0; color: #666; font-size: 0.85rem;">{desc}</p>
+            <h3 style="margin: 0; font-size: 1.2rem;">{titulo}</h3>
+            <p style="margin: 5px 0 15px 0; opacity: 0.8; font-size: 0.85rem;">{desc}</p>
         </div>
     """, unsafe_allow_html=True)
     if st.button(f"Entrar a {titulo}", key=f"btn_home_{indice}", use_container_width=True):
@@ -59,7 +57,7 @@ def dibujar_card(titulo, desc, emoji, indice):
 
 # --- PANTALLA DE INICIO (DASHBOARD) ---
 def show_dashboard_home():
-    st.markdown("<h1 style='text-align: center; color: #580f12;'>🔱 TRIDENTI V7</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center; color: #c5a065;'>🔱 TRIDENTI V7</h1>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Panel de Control Integral</p>", unsafe_allow_html=True)
     st.write("")
 
@@ -72,6 +70,8 @@ def show_dashboard_home():
     with f1[3]: dibujar_card("Tesorería", "Cierre de Caja", "🔒", 4)
     with f1[4]: dibujar_card("Banco Profit", "Ahorros Reales", "🐷", 5)
 
+    st.write("")
+
     # --- FILA 2: OPERACIÓN ---
     st.markdown("#### ⚙️ OPERACIÓN DIARIA")
     f2 = st.columns(5)
@@ -80,6 +80,8 @@ def show_dashboard_home():
     with f2[2]: dibujar_card("Sugeridos", "Pedidos Compra", "📝", 8)
     with f2[3]: dibujar_card("Compras", "Facturación", "🛒", 9)
     with f2[4]: dibujar_card("Gastos", "Caja Menor", "💸", 10)
+
+    st.write("")
 
     # --- FILA 3: INGENIERÍA ---
     st.markdown("#### 🧠 INGENIERÍA Y CONTROL")
@@ -90,8 +92,10 @@ def show_dashboard_home():
     with f3[3]: dibujar_card("Activos", "Mantenimiento", "🛠️", 14)
     with f3[4]: dibujar_card("Proveedores", "Contactos", "🤝", 15)
 
+    st.write("")
+
     # --- FILA 4: AJUSTES Y SALIDA ---
-    st.markdown("#### 🛡️ CONTROL Y SALIR")
+    st.markdown("#### 🛡️ CONTROL Y AJUSTES")
     f4 = st.columns(5)
     with f4[0]: dibujar_card("Auditoría", "Conteos Inv.", "✅", 16)
     with f4[1]: dibujar_card("Reportar Daño", "Mermas/Bajas", "⚠️", 17)
@@ -99,7 +103,8 @@ def show_dashboard_home():
     with f4[3]: st.write("")
     with f4[4]:
         st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
-        if st.button("🔒 CERRAR SESIÓN", type="primary", use_container_width=True):
+        # BOTÓN DE CERRAR SESIÓN FUNCIONAL
+        if st.button("🔒 CERRAR SESIÓN", type="primary", use_container_width=True, key="logout_home"):
             cerrar_sesion()
 
 # --- LOGIN ---
@@ -122,12 +127,13 @@ def login_form(sheet):
 
 # --- MAIN ---
 def main():
-    styles.cargar_estilos()
+    styles.cargar_estilos() # Carga CSS con arreglos para móvil
     sheet = conectar_google_sheets()
     
-    if "usuario_valido" not in st.session_state: st.session_state["usuario_valido"] = False
+    if "usuario_valido" not in st.session_state: 
+        st.session_state["usuario_valido"] = False
     
-    # Auto-login
+    # Auto-login por cookies
     if not st.session_state["usuario_valido"]:
         user_cookie = cookie_manager.get("tridenti_user")
         if user_cookie:
@@ -139,17 +145,20 @@ def main():
         login_form(sheet)
         return
 
-    # --- ROUTER SIN SIDEBAR ---
+    # --- ROUTER DE CONTENIDO ---
     idx = st.session_state["menu_index"]
 
-    # Barra superior de navegación (Solo si no estamos en inicio)
+    # BARRA DE NAVEGACIÓN SUPERIOR (BOTÓN VOLVER + BOTÓN ACTUALIZAR)
     if idx != 0:
-        col_nav1, col_nav2 = st.columns([1, 4])
-        if col_nav1.button("⬅️ VOLVER AL PANEL PRINCIPAL"):
+        c_nav1, c_nav2, c_nav3 = st.columns([1.5, 1, 4])
+        if c_nav1.button("⬅️ VOLVER AL PANEL", use_container_width=True):
             ir_a(0)
+        if c_nav2.button("🔄 ACTUALIZAR", use_container_width=True):
+            st.cache_data.clear() # Limpia caché antes de recargar
+            st.rerun() # Funciona como un F5
         st.markdown("---")
 
-    # Módulos
+    # Módulos según índice
     if idx == 0: show_dashboard_home()
     elif idx == 1: inteligencia.show(sheet)
     elif idx == 2: matriz_bcg.show(sheet)
