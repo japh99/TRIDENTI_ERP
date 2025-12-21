@@ -183,17 +183,104 @@ def show(sheet):
             st.plotly_chart(fig_calor, use_container_width=True)
 
     with t4:
-        st.subheader("Análisis de Supervivencia (Punto de Equilibrio)")
-        margen_contribucion_total = u_bruta / v_total if v_total > 0 else 0
-        pe_periodo = gastos_f / margen_contribucion_total if margen_contribucion_total > 0 else 0
+        st.subheader("⚖️ Análisis Profundo del Punto de Equilibrio")
         
-        progreso_pe = min(v_total / pe_periodo, 1.0) if pe_periodo > 0 else 0
-        
-        st.write(f"Para cubrir tus costos de **{formato_moneda_co(gastos_f)}** en este periodo, necesitabas vender **{formato_moneda_co(pe_periodo)}**.")
-        st.progress(progreso_pe)
-        st.write(f"Progreso hacia el punto de equilibrio: **{progreso_pe*100:.1f}%**")
-        
-        if v_total > pe_periodo:
-            st.success(f"🎊 Estás en zona de GANANCIA. Has superado el punto de equilibrio por {formato_moneda_co(v_total - pe_periodo)}.")
+        # 1. LÓGICA DE TIEMPO
+        if len(rango) == 2:
+            fecha_inicio, fecha_fin = rango[0], rango[1]
+            dias_seleccionados = (fecha_fin - fecha_inicio).days + 1
         else:
-            st.error(f"⚠️ Estás en zona de PÉRDIDA. Te faltan {formato_moneda_co(pe_periodo - v_total)} para cubrir los costos fijos.")
+            dias_seleccionados = 1
+
+        # 2. CÁLCULO DE COSTOS PROPORCIONALES
+        # Gastos fijos que corresponden SOLO a los días seleccionados
+        costo_fijo_periodo = fijo_diario * dias_seleccionados
+        
+        # Margen de Contribución Real (Lo que queda tras pagar ingredientes)
+        # Margen = (Ventas - Costos MP) / Ventas
+        margen_contribucion_pct = (u_bruta / v_total) if v_total > 0 else 0
+        
+        # Fórmula del Punto de Equilibrio: Costos Fijos / % Margen
+        punto_equilibrio_dinamico = costo_fijo_periodo / margen_contribucion_pct if margen_contribucion_pct > 0 else 0
+        
+        # 3. INDICADORES VISUALES
+        col_pe1, col_pe2 = st.columns([2, 1])
+
+        with col_pe1:
+            # Gráfico de Velocímetro (Gauge)
+            fig_gauge = go.Figure(go.Indicator(
+                mode = "gauge+number+delta",
+                value = v_total,
+                domain = {'x': [0, 1], 'y': [0, 1]},
+                title = {'text': f"Ventas del Periodo ({dias_seleccionados} días)", 'font': {'size': 20}},
+                delta = {'reference': punto_equilibrio_dinamico, 'increasing': {'color': "green"}},
+                gauge = {
+                    'axis': {'range': [None, max(punto_equilibrio_dinamico * 1.5, v_total * 1.2)]},
+                    'bar': {'color': "#580f12"}, # Guinda Tridenti
+                    'bgcolor': "white",
+                    'borderwidth': 2,
+                    'bordercolor': "#c5a065", # Dorado
+                    'steps': [
+                        {'range': [0, punto_equilibrio_dinamico], 'color': '#ffcccc'},
+                        {'range': [punto_equilibrio_dinamico, punto_equilibrio_dinamico * 1.5], 'color': '#ccffcc'}
+                    ],
+                    'threshold': {
+                        'line': {'color': "black", 'width': 4},
+                        'thickness': 0.75,
+                        'value': punto_equilibrio_dinamico
+                    }
+                }
+            ))
+            fig_gauge.update_layout(height=350, margin=dict(l=10, r=10, t=40, b=10))
+            st.plotly_chart(fig_gauge, use_container_width=True)
+
+        with col_pe2:
+            st.markdown("### 📝 Resumen del Periodo")
+            st.write(f"**Días analizados:** {dias_seleccionados}")
+            st.write(f"**Costos Fijos proporcionales:** {formato_moneda_co(costo_fijo_periodo)}")
+            st.write(f"**Margen de Ganancia Promedio:** {margen_contribucion_pct*100:.1f}%")
+            
+            if v_total >= punto_equilibrio_dinamico:
+                st.success(f"**¡LOGRADO!** Has superado el punto de equilibrio por {formato_moneda_co(v_total - punto_equilibrio_dinamico)}")
+            else:
+                faltante = punto_equilibrio_dinamico - v_total
+                st.error(f"**PENDIENTE:** Te faltan {formato_moneda_co(faltante)} para cubrir costos.")
+
+        # 4. TABLA DE METAS DIARIAS
+        st.markdown("---")
+        st.markdown("### 🎯 Metas Diarias de Supervivencia")
+        
+        meta_diaria_venta = punto_equilibrio_dinamico / dias_seleccionados if dias_seleccionados > 0 else 0
+        venta_diaria_real = v_total / dias_seleccionados if dias_seleccionados > 0 else 0
+        
+        c_meta1, c_meta2, c_meta3 = st.columns(3)
+        
+        with c_meta1:
+            st.metric("Meta de Venta Diaria", formato_moneda_co(meta_diaria_venta), 
+                      help="Mínimo que debes vender cada día para no perder dinero.")
+        
+        with c_meta2:
+            st.metric("Venta Diaria Real (Promedio)", formato_moneda_co(venta_diaria_real),
+                      delta=formato_moneda_co(venta_diaria_real - meta_diaria_venta))
+            
+        with c_meta3:
+            cumplimiento = (venta_diaria_real / meta_diaria_venta * 100) if meta_diaria_venta > 0 else 0
+            st.metric("% Cumplimiento Meta", f"{cumplimiento:.1f}%")
+
+        # 5. GRÁFICO DE BARRAS DE COMPARACIÓN
+        df_comp = pd.DataFrame({
+            "Categoría": ["Venta Real", "Punto de Equilibrio"],
+            "Monto": [v_total, punto_equilibrio_dinamico],
+            "Color": ["Real", "Meta"]
+        })
+        
+        fig_barras = px.bar(df_comp, x="Categoría", y="Monto", color="Color", 
+                            color_discrete_map={"Real": "#580f12", "Meta": "#cccccc"},
+                            title="Comparativa: Venta Real vs Meta Requerida")
+        st.plotly_chart(fig_barras, use_container_width=True)
+
+        st.info("""
+            **¿Cómo leer esto?**
+            * Si la **Venta Real** es mayor al **Punto de Equilibrio**, el negocio generó ganancias después de pagar arriendo, nóminas e ingredientes.
+            * El **Margen de Contribución** indica cuántos centavos de cada peso te quedan libres para pagar los gastos fijos.
+        """)
