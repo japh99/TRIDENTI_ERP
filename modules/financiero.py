@@ -11,59 +11,96 @@ HOJA_PAGOS = "LOG_PAGOS_GASTOS"
 
 def formato_moneda(valor):
     if pd.isna(valor) or valor == "": return "$ 0"
-    try: return f"$ {int(float(valor)):,}".replace(",", ".")
-    except: return "$ 0"
+    try: 
+        return f"$ {int(float(valor)):,}".replace(",", ".")
+    except: 
+        return "$ 0"
 
-# --- GESTIÓN DE CONFIGURACIÓN ---
+# --- GESTIÓN DE CONFIGURACIÓN (SIN DUPLICADOS) ---
+
 def cargar_config_gastos(sheet):
-    """Lee los gastos fijos para configurar la agenda."""
+    """Lee los gastos fijos de DB_CONFIG y los formatea para la tabla."""
     try:
         ws = sheet.worksheet(HOJA_CONFIG)
-        data = ws.get_all_records()
+        df_config = leer_datos_seguro(ws)
         gastos = []
         
+        # Conceptos sugeridos por defecto si la base está vacía
         sugeridos = ["Arriendo Local", "Nómina Fija", "Servicios Públicos", "Internet", "Marketing", "Contador", "Mantenimiento"]
         encontrados = []
 
-        for row in data:
-            param = str(row.get("Parametro", ""))
-            if param.startswith("GASTO_FIJO_"):
-                nombre = param.replace("GASTO_FIJO_", "").replace("_", " ")
-                valor_raw = str(row.get("Valor", "0"))
-                
-                parts = valor_raw.split("|")
-                val = parts[0]
-                dia = parts[1] if len(parts) > 1 else "1"
-                freq = parts[2] if len(parts) > 2 else "Mensual"
-                
-                gastos.append({
-                    "Concepto": nombre,
-                    "Valor Total Mensual": limpiar_numero(val),
-                    "Día de Pago": int(limpiar_numero(dia)),
-                    "Frecuencia": freq
-                })
-                encontrados.append(nombre)
+        if not df_config.empty:
+            for _, row in df_config.iterrows():
+                param = str(row.get("Parametro", ""))
+                # Filtrar solo lo que sea gasto fijo
+                if param.startswith("GASTO_FIJO_"):
+                    nombre = param.replace("GASTO_FIJO_", "").replace("_", " ")
+                    valor_raw = str(row.get("Valor", "0|5|Mensual"))
+                    
+                    parts = valor_raw.split("|")
+                    val = parts[0]
+                    dia = parts[1] if len(parts) > 1 else "5"
+                    freq = parts[2] if len(parts) > 2 else "Mensual"
+                    
+                    gastos.append({
+                        "Concepto": nombre,
+                        "Valor Total Mensual": limpiar_numero(val),
+                        "Día de Pago": int(limpiar_numero(dia)),
+                        "Frecuencia": freq
+                    })
+                    encontrados.append(nombre)
         
+        # Agregar sugeridos que no estén en el Excel
         for s in sugeridos:
             if s not in encontrados:
-                gastos.append({"Concepto": s, "Valor Total Mensual": 0.0, "Día de Pago": 5, "Frecuencia": "Mensual"})
+                gastos.append({
+                    "Concepto": s, 
+                    "Valor Total Mensual": 0.0, 
+                    "Día de Pago": 5, 
+                    "Frecuencia": "Mensual"
+                })
                 
         return pd.DataFrame(gastos)
     except:
         return pd.DataFrame(columns=["Concepto", "Valor Total Mensual", "Día de Pago", "Frecuencia"])
 
-def guardar_config_gastos(sheet, df):
+def guardar_config_gastos(sheet, df_editado):
+    """Guarda la configuración sobrescribiendo para evitar duplicados."""
     try:
         ws = sheet.worksheet(HOJA_CONFIG)
-        for _, row in df.iterrows():
-            p = f"GASTO_FIJO_{row['Concepto'].replace(' ', '_')}"
-            v = f"{row['Valor Total Mensual']}|{int(row['Día de Pago'])}|{row['Frecuencia']}"
-            
-            cell = ws.find(p)
-            if cell: ws.update_cell(cell.row, 2, v)
-            else: ws.append_row([p, v])
+        df_actual = leer_datos_seguro(ws)
+        
+        # 1. Separar lo que NO es gasto fijo (para no borrarlo)
+        if not df_actual.empty:
+            df_otros = df_actual[~df_actual['Parametro'].str.startswith("GASTO_FIJO_", na=False)].copy()
+        else:
+            df_otros = pd.DataFrame(columns=["Parametro", "Valor", "Descripcion"])
+
+        # 2. Convertir los datos de la tabla de la App al formato de la DB
+        nuevos_registros = []
+        for _, row in df_editado.iterrows():
+            concepto = str(row["Concepto"]).strip()
+            if concepto and concepto != "None":
+                param_id = f"GASTO_FIJO_{concepto.replace(' ', '_')}"
+                valor_str = f"{row['Valor Total Mensual']}|{int(row['Día de Pago'])}|{row['Frecuencia']}"
+                nuevos_registros.append({
+                    "Parametro": param_id,
+                    "Valor": valor_str,
+                    "Descripcion": f"Carga fabril: {concepto}"
+                })
+        
+        df_nuevos_gastos = pd.DataFrame(nuevos_registros)
+
+        # 3. Unir todo
+        df_final = pd.concat([df_otros, df_nuevos_gastos], ignore_index=True)
+        
+        # 4. Limpiar hoja y actualizar
+        ws.clear()
+        ws.update([df_final.columns.values.tolist()] + df_final.values.tolist())
         return True
-    except: return False
+    except Exception as e:
+        st.error(f"Error al guardar: {e}")
+        return False
 
 def registrar_pago_realizado(sheet, datos):
     try:
@@ -77,23 +114,24 @@ def registrar_pago_realizado(sheet, datos):
     except: return False
 
 # --- INTERFAZ ---
+
 def show(sheet):
     st.title("💼 Departamento Financiero")
-    st.caption("Configuración de Carga Fabril y Pagos.")
+    st.caption("Configuración de Carga Fabril y Agenda de Pagos.")
     st.markdown("---")
     
     if not sheet: return
 
-    # Cargar Configuración
+    # Carga inicial
     df_gastos = cargar_config_gastos(sheet)
 
-    # Barra de Progreso Mes
+    # Barra de Progreso del Mes
     hoy = datetime.now(ZONA_HORARIA)
     dia_actual = hoy.day
     dias_mes = calendar.monthrange(hoy.year, hoy.month)[1]
     progreso = dia_actual / dias_mes
     
-    st.write(f"📅 **Progreso del Mes:** Día {dia_actual} de {dias_mes}")
+    st.write(f"📅 **Estado del Mes:** Día {dia_actual} de {dias_mes}")
     st.progress(progreso)
     st.markdown("---")
 
@@ -103,35 +141,36 @@ def show(sheet):
         "🗄️ HISTORIAL PAGOS"
     ])
 
-    # --- TAB 1: CONFIGURACIÓN GASTOS ---
+    # --- TAB 1: CONFIGURACIÓN ---
     with tab_carga:
         st.subheader("Configuración de Obligaciones Fijas")
-        st.info("Define aquí tus costos fijos mensuales y cuándo se pagan.")
+        st.info("Define tus costos mensuales. Si borras una fila aquí, se eliminará del sistema al guardar.")
         
         df_editado = st.data_editor(
             df_gastos,
             num_rows="dynamic",
             column_config={
                 "Concepto": st.column_config.TextColumn("Concepto", required=True),
-                "Valor Total Mensual": st.column_config.NumberColumn("Valor MENSUAL ($)", step=50000, format="$%d"),
-                "Día de Pago": st.column_config.NumberColumn("Día Límite", min_value=1, max_value=31),
+                "Valor Total Mensual": st.column_config.NumberColumn("Monto Total ($)", step=1000, format="$%d"),
+                "Día de Pago": st.column_config.NumberColumn("Día de Pago", min_value=1, max_value=31),
                 "Frecuencia": st.column_config.SelectboxColumn("Frecuencia", options=["Mensual", "Quincenal"], required=True)
             },
             use_container_width=True,
             hide_index=True,
-            key="editor_financiero"
+            key="editor_financiero_v2"
         )
         
         total_fijos = df_editado["Valor Total Mensual"].sum()
         c_tot, c_btn = st.columns([2, 1])
-        c_tot.metric("Total Gastos Fijos (Mes)", formato_moneda(total_fijos))
+        c_tot.metric("Presupuesto Fijo Mensual", formato_moneda(total_fijos))
         
-        if c_btn.button("💾 GUARDAR CONFIGURACIÓN", type="primary"):
+        if c_btn.button("💾 GUARDAR CAMBIOS", type="primary", use_container_width=True):
             if guardar_config_gastos(sheet, df_editado):
-                st.success("✅ Datos actualizados.")
-                time.sleep(1); st.rerun()
+                st.success("✅ Configuración sincronizada.")
+                time.sleep(1)
+                st.rerun()
 
-    # --- TAB 2: AGENDA Y PAGOS ---
+    # --- TAB 2: AGENDA ---
     with tab_agenda:
         st.subheader("🔔 Calendario de Obligaciones")
         
@@ -142,15 +181,13 @@ def show(sheet):
             dia_base = int(row["Día de Pago"])
             freq = row["Frecuencia"]
             
-            # LÓGICA DE NÓMINA (QUINCENAL)
             if freq == "Mensual":
                 agenda_items.append({"Concepto": nombre, "Monto": total, "Día": dia_base})
             elif freq == "Quincenal":
                 parcial = total / 2
-                agenda_items.append({"Concepto": f"{nombre} (1a Quincena)", "Monto": parcial, "Día": dia_base})
-                # Segunda quincena 15 días después (o fin de mes)
+                agenda_items.append({"Concepto": f"{nombre} (1a Q)", "Monto": parcial, "Día": dia_base})
                 dia_2 = (dia_base + 15) if (dia_base + 15) <= dias_mes else dias_mes
-                agenda_items.append({"Concepto": f"{nombre} (2a Quincena)", "Monto": parcial, "Día": dia_2})
+                agenda_items.append({"Concepto": f"{nombre} (2a Q)", "Monto": parcial, "Día": dia_2})
         
         df_agenda = pd.DataFrame(agenda_items).sort_values("Día")
         
@@ -158,7 +195,7 @@ def show(sheet):
         lista_pagar_hoy = []
         
         with col_urg:
-            st.error("🚨 **URGENTE (Hoy o Vencido)**")
+            st.error("🚨 **VENCIDOS O HOY**")
             for _, item in df_agenda.iterrows():
                 if item["Día"] <= dia_actual:
                     st.write(f"• **{item['Concepto']}**")
@@ -172,65 +209,61 @@ def show(sheet):
                     st.write(f"• {item['Concepto']} (Día {item['Día']})")
 
         with col_fut:
-            st.success("📆 **FUTURO**")
+            st.success("📆 **RESTO DEL MES**")
             for _, item in df_agenda.iterrows():
                 if item["Día"] > dia_actual + 7:
-                    st.write(f"• {item['Concepto']}")
+                    st.write(f"• {item['Concepto']} (Día {item['Día']})")
 
         st.markdown("---")
-        st.subheader("💸 Registrar Pago Realizado")
+        st.subheader("💸 Registrar Pago")
         
         with st.container(border=True):
-            c_p1, c_p2 = st.columns(2)
+            cp1, cp2 = st.columns(2)
+            with cp1:
+                op_pago = st.selectbox("Obligación a pagar", ["Seleccionar..."] + lista_pagar_hoy + ["Otros"])
+                monto_p = st.number_input("Monto Pagado", min_value=0.0, step=1000.0)
+            with cp2:
+                metodo = st.selectbox("Método", ["Transferencia", "Efectivo", "Nequi/Daviplata"])
+                soporte = st.file_uploader("Evidencia (Imagen/PDF)", type=["jpg", "png", "jpeg", "pdf"])
             
-            with c_p1:
-                opcion_pago = st.selectbox("¿Qué vas a pagar?", ["Seleccionar..."] + lista_pagar_hoy + ["Otro Gasto Fijo"])
-                monto_pagar = st.number_input("Monto Real a Pagar", min_value=0.0, step=10000.0)
-                metodo = st.selectbox("Medio de Pago", ["Transferencia/Nequi", "Efectivo"])
-                
-            with c_p2:
-                ref = st.text_input("Referencia / Comprobante")
-                soporte = st.file_uploader("📎 Subir Recibo (PDF/Foto)", type=["jpg", "png", "jpeg", "pdf"])
+            ref = st.text_input("Nota / Referencia")
             
-            if st.button("✅ REGISTRAR PAGO Y SUBIR EVIDENCIA", type="primary", use_container_width=True):
-                if monto_pagar > 0:
-                    with st.status("Subiendo soporte a la nube...", expanded=True):
+            if st.button("🚀 REGISTRAR PAGO Y SUBIR SOPORTE", type="primary", use_container_width=True):
+                if monto_p > 0 and op_pago != "Seleccionar...":
+                    with st.status("Procesando pago...", expanded=True):
                         link = "Sin Soporte"
                         if soporte:
-                            # --- NUEVA LÓGICA DE CARPETAS ---
-                            # Nombre carpeta limpio (sin paréntesis extraños)
-                            nombre_carpeta = opcion_pago.split(" - ")[0].split(" (")[0].upper().replace(" ", "_").replace("Ó","O").replace("Í","I")
-                            
-                            # USAMOS LA CARPETA RAÍZ 'COSTOS_FIJOS_SOPORTES'
-                            link = subir_foto_drive(soporte, subcarpeta=nombre_carpeta, carpeta_raiz="COSTOS_FIJOS_SOPORTES")
+                            nombre_f = op_pago.split(" - ")[0].upper().replace(" ", "_")
+                            link = subir_foto_drive(soporte, subcarpeta=nombre_f, carpeta_raiz="COSTOS_FIJOS_SOPORTES")
                         
-                        id_pago = f"PAY-{generar_id()}"
-                        fecha_hoy = datetime.now(ZONA_HORARIA).strftime("%Y-%m-%d")
-                        hora_hoy = datetime.now(ZONA_HORARIA).strftime("%H:%M")
+                        id_p = f"PAY-{generar_id()}"
+                        f_hoy = datetime.now(ZONA_HORARIA).strftime("%Y-%m-%d")
+                        h_hoy = datetime.now(ZONA_HORARIA).strftime("%H:%M")
                         
-                        datos_pago = [id_pago, fecha_hoy, hora_hoy, opcion_pago, monto_pagar, metodo, ref, link, "Admin"]
+                        datos_p = [id_p, f_hoy, h_hoy, op_pago, monto_p, metodo, ref, link, "Admin"]
                         
-                        if registrar_pago_realizado(sheet, datos_pago):
-                            st.success("Pago registrado correctamente.")
-                            time.sleep(2); st.rerun()
-                        else:
-                            st.error("Error al guardar.")
+                        if registrar_pago_realizado(sheet, datos_p):
+                            st.success("Pago guardado.")
+                            time.sleep(1.5)
+                            st.rerun()
                 else:
-                    st.warning("Ingresa un monto válido.")
+                    st.warning("Completa el monto y el concepto.")
 
     # --- TAB 3: HISTORIAL ---
     with tab_hist:
-        st.subheader("🗄️ Historial de Pagos")
+        st.subheader("🗄️ Historial de Egresos Fijos")
         try:
             ws_h = sheet.worksheet(HOJA_PAGOS)
             df_h = leer_datos_seguro(ws_h)
             if not df_h.empty:
-                df_h["Monto"] = pd.to_numeric(df_h["Monto"]).apply(formato_moneda)
+                df_h["Monto"] = pd.to_numeric(df_h["Monto"], errors='coerce').apply(formato_moneda)
                 st.dataframe(
-                    df_h[["Fecha", "Concepto", "Monto", "Metodo", "Referencia", "URL_Soporte"]].sort_values("Fecha", ascending=False),
+                    df_h[["Fecha", "Concepto", "Monto", "Metodo", "URL_Soporte"]].sort_values("Fecha", ascending=False),
                     use_container_width=True,
                     column_config={"URL_Soporte": st.column_config.LinkColumn("Ver Recibo")},
                     hide_index=True
                 )
-            else: st.info("No hay pagos registrados aún.")
-        except: st.info("Base de datos de pagos nueva.")
+            else:
+                st.info("No hay pagos registrados.")
+        except:
+            st.info("Base de datos de pagos lista para iniciar.")
