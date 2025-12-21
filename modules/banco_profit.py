@@ -1,279 +1,213 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime
 import time
+import uuid
 from utils import conectar_google_sheets, leer_datos_seguro, ZONA_HORARIA, limpiar_numero, generar_id
 
 # --- CONFIGURACIÓN ---
-HOJA_VENTAS = "LOG_VENTAS_LOYVERSE"
-HOJA_GASTOS = "LOG_GASTOS"
-HOJA_COMPRAS = "LOG_COMPRAS"
 HOJA_CIERRES = "LOG_CIERRES_CAJA"
+HOJA_BANCO = "LOG_BANCO_PROFIT"
 
-HEADERS_CIERRE = [
-    "ID_Cierre", "Fecha", "Hora_Cierre", "Venta_Total", "Efectivo_Teorico", 
-    "Efectivo_Real", "Diferencia", "Nequi_Total", "Tarjetas_Total", 
-    "Gastos_Efectivo", "Profit_Sugerido", "Notas", "Z_Report"
+# Estructura del Banco
+HEADERS_BANCO = [
+    "ID_Movimiento", "Fecha_Registro", "Hora", "Tipo_Movimiento", 
+    "Monto", "Fecha_Referencia", "Responsable", "Notas"
 ]
+# Fecha_Referencia = La fecha del cierre que se está pagando (ej: 2025-12-18)
 
 def formato_moneda(valor):
     if pd.isna(valor) or valor == "": return "$ 0"
     try: return f"$ {int(float(valor)):,}".replace(",", ".")
     except: return "$ 0"
 
-# --- FUNCIONES DE MANTENIMIENTO ---
+# --- BACKEND ---
 
 def obtener_o_crear_hoja(sheet, nombre, headers):
-    """Garantiza que la hoja exista. Si no, la crea."""
-    try: 
-        return sheet.worksheet(nombre)
+    try: return sheet.worksheet(nombre)
     except:
-        # Si falla al leer, la creamos
-        ws = sheet.add_worksheet(title=nombre, rows="1000", cols="20")
+        ws = sheet.add_worksheet(title=nombre, rows="2000", cols="10")
         ws.append_row(headers)
         return ws
 
-def asegurar_columnas(ws):
+def cargar_datos_banco(sheet):
+    """Carga los cierres (deuda potencial) y los movimientos bancarios (realidad)."""
     try:
-        curr = ws.row_values(1)
-        if not curr: ws.append_row(HEADERS_CIERRE); return
-        miss = [c for c in HEADERS_CIERRE if c not in curr]
-        if miss:
-            nxt = len(curr) + 1
-            for c in miss: ws.update_cell(1, nxt, c); nxt+=1
-    except: pass
-
-# --- FUNCIONES DE CARGA ---
-
-def cargar_historial_completo(sheet):
-    """Carga el historial creando la hoja si no existe."""
-    try:
-        # AQUÍ ESTÁ LA CORRECCIÓN: Usamos la función creadora
-        ws = obtener_o_crear_hoja(sheet, HOJA_CIERRES, HEADERS_CIERRE)
-        return leer_datos_seguro(ws)
-    except: return pd.DataFrame()
-
-def cargar_movimientos(sheet, fecha_str):
-    try:
-        # Ventas
-        ws_v = sheet.worksheet(HOJA_VENTAS)
-        df_v = pd.DataFrame(ws_v.get_all_records())
-        if not df_v.empty:
-            df_v["Fecha"] = df_v["Fecha"].astype(str)
-            df_v = df_v[df_v["Fecha"] == fecha_str]
-            df_v = df_v.drop_duplicates(subset=["Numero_Recibo", "ID_Plato", "Hora"])
-            df_v["Total_Dinero"] = pd.to_numeric(df_v["Total_Dinero"], errors='coerce').fillna(0)
+        # 1. Cierres de Caja (Para saber qué debemos)
+        ws_c = sheet.worksheet(HOJA_CIERRES)
+        df_cierres = leer_datos_seguro(ws_c)
         
-        # Gastos
-        try: ws_g = sheet.worksheet(HOJA_GASTOS); df_g = leer_datos_seguro(ws_g)
-        except: df_g = pd.DataFrame()
-        if not df_g.empty:
-            df_g["Fecha"] = df_g["Fecha"].astype(str)
-            df_g = df_g[df_g["Fecha"] == fecha_str]
-            df_g["Monto"] = pd.to_numeric(df_g["Monto"], errors='coerce').fillna(0)
+        # 2. Movimientos del Banco (Para saber qué tenemos)
+        ws_b = obtener_o_crear_hoja(sheet, HOJA_BANCO, HEADERS_BANCO)
+        df_banco = leer_datos_seguro(ws_b)
 
-        # Compras
-        try: ws_c = sheet.worksheet(HOJA_COMPRAS); df_c = leer_datos_seguro(ws_c)
-        except: df_c = pd.DataFrame()
-        if not df_c.empty:
-            df_c["Fecha_Registro"] = df_c["Fecha_Registro"].astype(str)
-            df_c = df_c[df_c["Fecha_Registro"] == fecha_str]
-            df_c["Precio_Total_Pagado"] = pd.to_numeric(df_c["Precio_Total_Pagado"], errors='coerce').fillna(0)
+        # Limpieza de números
+        if not df_cierres.empty:
+            if "Profit_Sugerido" in df_cierres.columns: # Si usas la versión nueva
+                col_profit = "Profit_Sugerido"
+            elif "Profit_Retenido" in df_cierres.columns: # Si usas versiones mixtas
+                col_profit = "Profit_Retenido"
+            else:
+                col_profit = None
+            
+            if col_profit:
+                df_cierres["Monto_Profit"] = df_cierres[col_profit].astype(str).apply(limpiar_numero)
+            else:
+                df_cierres["Monto_Profit"] = 0.0
+                
+        else:
+            df_cierres = pd.DataFrame(columns=["Fecha", "Monto_Profit"])
 
-        return df_v, df_g, df_c
-    except: return None, None, None
+        if not df_banco.empty:
+            df_banco["Monto"] = df_banco["Monto"].astype(str).apply(limpiar_numero)
+        else:
+            df_banco = pd.DataFrame(columns=HEADERS_BANCO)
 
-def verificar_cierre(sheet, fecha):
+        return df_cierres, df_banco, ws_b
+
+    except Exception as e:
+        # st.error(f"Error cargando banco: {e}") 
+        return pd.DataFrame(), pd.DataFrame(), None
+
+def registrar_movimiento(ws, tipo, monto, fecha_ref, resp, notas):
     try:
-        ws = obtener_o_crear_hoja(sheet, HOJA_CIERRES, HEADERS_CIERRE) # Blindado
-        df = leer_datos_seguro(ws)
-        if not df.empty and "Fecha" in df.columns:
-            df["Fecha"] = df["Fecha"].astype(str)
-            res = df[df["Fecha"] == fecha]
-            if not res.empty: return res.iloc[0]
-    except: pass
-    return None
-
-def reabrir_caja(sheet, fecha):
-    try:
-        ws = sheet.worksheet(HOJA_CIERRES)
-        data = ws.get_all_records()
-        df = pd.DataFrame(data)
-        df["Fecha"] = df["Fecha"].astype(str)
-        df_new = df[df["Fecha"] != fecha]
-        ws.clear()
-        ws.update([df_new.columns.values.tolist()] + df_new.values.tolist())
-        return True
-    except: return False
-
-def actualizar_audit(sheet, df_edit):
-    try:
-        ws = sheet.worksheet(HOJA_VENTAS)
-        col_recibos = ws.col_values(3)
-        for _, row in df_edit.iterrows():
-            try:
-                r = str(row["Numero_Recibo"])
-                idx = col_recibos.index(r) + 1
-                if row["Metodo_Pago_Real_Auditado"] != row["Metodo_Pago_Loyverse"]:
-                    ws.update_cell(idx, 9, row["Metodo_Pago_Real_Auditado"])
-            except: pass
-        return True
-    except: return False
-
-def guardar_cierre(sheet, datos_dict):
-    try:
-        ws = obtener_o_crear_hoja(sheet, HOJA_CIERRES, HEADERS_CIERRE)
-        asegurar_columnas(ws)
+        fecha_reg = datetime.now(ZONA_HORARIA).strftime("%Y-%m-%d")
+        hora = datetime.now(ZONA_HORARIA).strftime("%H:%M")
         
-        headers = ws.row_values(1)
-        row = []
-        for h in headers:
-            val = datos_dict.get(h, "")
-            row.append(str(val))
-        
+        # ID, FechaReg, Hora, Tipo, Monto, FechaRef, Resp, Notas
+        row = [
+            generar_id(), fecha_reg, hora, tipo, 
+            monto, str(fecha_ref), resp, notas
+        ]
         ws.append_row(row)
         return True
-    except Exception as e:
-        st.error(f"Error: {e}")
-        return False
+    except: return False
 
 # --- INTERFAZ ---
+
 def show(sheet):
-    st.title("🔐 Tesorería: Cierre de Caja")
-    st.caption("Cuadre diario de efectivo.")
+    st.title("🐷 Banco de Ahorro (Profit First)")
+    st.caption("Administra tus utilidades y reservas.")
     st.markdown("---")
+    
     if not sheet: return
 
-    hoy = datetime.now(ZONA_HORARIA).date()
-    c1, c2 = st.columns([1, 2])
-    fecha_cierre = c1.date_input("Fecha", value=hoy)
-    fecha_str = fecha_cierre.strftime("%Y-%m-%d")
+    df_cierres, df_banco, ws_banco = cargar_datos_banco(sheet)
 
-    # VERIFICAR SI YA ESTÁ CERRADO
-    cierre_previo = verificar_cierre(sheet, fecha_str)
-
-    if cierre_previo is not None:
-        # VISTA LECTURA
-        z = cierre_previo.get("Z_Report", "S/N")
-        st.success(f"✅ **DÍA CERRADO** (Z: {z})")
-        
-        v_tot = float(limpiar_numero(cierre_previo.get("Venta_Total", 0)))
-        efec_real = float(limpiar_numero(cierre_previo.get("Efectivo_Real", 0)))
-        diff = float(limpiar_numero(cierre_previo.get("Diferencia", 0)))
-        
-        k1, k2, k3 = st.columns(3)
-        k1.metric("Venta Total", formato_moneda(v_tot))
-        k2.metric("Efectivo Contado", formato_moneda(efec_real))
-        
-        if diff == 0: k3.success(f"Diferencia: {formato_moneda(diff)}")
-        elif diff > 0: k3.info(f"Sobra: {formato_moneda(diff)}")
-        else: k3.error(f"Falta: {formato_moneda(diff)}")
-
-        st.text_area("Notas:", value=cierre_previo.get("Notas",""), disabled=True)
-        
-        if st.button("🗑️ REABRIR CAJA", type="secondary"):
-            if reabrir_caja(sheet, fecha_str): st.rerun()
-            
-    else:
-        # VISTA EDICIÓN
-        df_v, df_g, df_c, ws_v = cargar_movimientos(sheet, fecha_str)
-        
-        if df_v is None or df_v.empty:
-            st.warning("⚠️ No hay ventas descargadas para este día.")
-        else:
-            # 1. Auditoría
-            with st.expander("🛠️ Auditoría de Medios de Pago", expanded=False):
-                df_aud = df_v[["Hora","Numero_Recibo","Total_Dinero","Metodo_Pago_Loyverse","Metodo_Pago_Real_Auditado"]].drop_duplicates(subset=["Numero_Recibo"])
-                df_ed = st.data_editor(
-                    df_aud, 
-                    column_config={"Metodo_Pago_Real_Auditado": st.column_config.SelectboxColumn("MÉTODO REAL", options=["Efectivo","Nequi","Tarjeta","Otro"], required=True)},
-                    hide_index=True, use_container_width=True
-                )
-                if st.button("💾 Guardar Correcciones"):
-                    if actualizar_audit(sheet, df_ed): st.success("Listo"); time.sleep(1); st.rerun()
-
-            # 2. Cálculos
-            v_total = df_v["Total_Dinero"].sum()
-            v_efec = df_v[df_v["Metodo_Pago_Real_Auditado"] == "Efectivo"]["Total_Dinero"].sum()
-            v_digi = df_v[df_v["Metodo_Pago_Real_Auditado"].str.contains("Nequi|Davi|Banco|Transf", case=False, na=False)]["Total_Dinero"].sum()
-            v_tarj = df_v[df_v["Metodo_Pago_Real_Auditado"].isin(["Tarjeta", "Datafono"])]["Total_Dinero"].sum()
-            
-            g_efec = df_g[df_g["Metodo_Pago"].str.contains("Efectivo", case=False)]["Monto"].sum() if not df_g.empty else 0
-            c_efec = df_c[df_c["Metodo_Pago"].str.contains("Efectivo", case=False)]["Precio_Total_Pagado"].sum() if not df_c.empty else 0
-            
-            saldo_teo = v_efec - g_efec - c_efec
-
-            # 3. Resumen
-            st.markdown("#### 📊 Resumen Financiero")
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("VENTA TOTAL", formato_moneda(v_total))
-            k2.metric("Efectivo", formato_moneda(v_efec))
-            k3.metric("Digital", formato_moneda(v_digi))
-            k4.metric("Tarjetas", formato_moneda(v_tarj))
-            
-            st.markdown("---")
-            
-            # Profit
-            c_prof1, c_prof2 = st.columns([1, 2])
-            pct_prof = c_prof1.number_input("% Profit Sugerido", value=5, min_value=1)
-            monto_prof = v_total * (pct_prof/100)
-            c_prof2.info(f"💡 Sugerencia de Ahorro: **{formato_moneda(monto_prof)}**")
-            
-            st.markdown("---")
-
-            # 4. Arqueo
-            st.markdown("#### 💵 Arqueo de Efectivo")
-            c1, c2, c3 = st.columns(3)
-            c1.metric("(+) Entradas Efec.", formato_moneda(v_efec))
-            c2.metric("(-) Salidas Efec.", formato_moneda(g_efec + c_efec))
-            c3.metric("(=) DEBE HABER", formato_moneda(saldo_teo))
-            
-            cr, cd = st.columns(2)
-            real = cr.number_input("¿Cuánto contaste?", min_value=0.0, step=500.0)
-            diff = real - saldo_teo
-            
-            if diff == 0: st.success("✅ CUADRADO")
-            else: st.error(f"🔴 DIFERENCIA: {formato_moneda(diff)}")
-
-            cz, cn = st.columns([1, 2])
-            z = cz.text_input("Z-Report")
-            notas = cn.text_area("Notas")
-            
-            if st.button("🔒 GUARDAR CIERRE", type="primary", use_container_width=True):
-                datos = {
-                    "ID_Cierre": generar_id(),
-                    "Fecha": fecha_str,
-                    "Hora_Cierre": datetime.now(ZONA_HORARIA).strftime("%H:%M"),
-                    "Venta_Total": v_total,
-                    "Efectivo_Teorico": saldo_teo,
-                    "Efectivo_Real": real,
-                    "Diferencia": diff,
-                    "Nequi_Total": v_digi,
-                    "Tarjetas_Total": v_tarj,
-                    "Gastos_Efectivo": g_efec + c_efec,
-                    "Profit_Sugerido": monto_prof,
-                    "Notas": notas,
-                    "Z_Report": str(z)
-                }
-                if guardar_cierre(sheet, datos):
-                    st.balloons(); st.success("Guardado."); time.sleep(2); st.rerun()
-
-    # --- HISTORIAL (SIEMPRE VISIBLE) ---
-    st.markdown("---")
-    st.subheader("📜 Historial de Cierres")
+    # --- 1. CÁLCULO DE SALDOS ---
     
-    df_h = cargar_historial_completo(sheet)
-    if not df_h.empty:
-        df_h = df_h.sort_values("Fecha", ascending=False).head(10)
+    # Saldo Real en Banco
+    total_entradas = df_banco[df_banco["Tipo_Movimiento"] == "ENTRADA"]["Monto"].sum()
+    total_salidas = df_banco[df_banco["Tipo_Movimiento"] == "SALIDA"]["Monto"].sum()
+    saldo_disponible = total_entradas - total_salidas
+
+    # Cálculo de Deuda (Pendientes)
+    # Buscamos qué fechas de cierre YA tienen una entrada en el banco
+    fechas_pagadas = []
+    if not df_banco.empty:
+        fechas_pagadas = df_banco[df_banco["Tipo_Movimiento"] == "ENTRADA"]["Fecha_Referencia"].unique().tolist()
+    
+    # Filtramos los cierres que NO están en la lista de pagados y tienen monto > 0
+    pendientes = pd.DataFrame()
+    if not df_cierres.empty:
+        # Convertir a string para comparar
+        df_cierres["Fecha"] = df_cierres["Fecha"].astype(str)
+        # Lógica: Fecha no está en pagadas Y el monto es mayor a 0
+        pendientes = df_cierres[
+            (~df_cierres["Fecha"].isin(fechas_pagadas)) & 
+            (df_cierres["Monto_Profit"] > 0)
+        ].copy()
+
+    total_deuda = pendientes["Monto_Profit"].sum() if not pendientes.empty else 0
+
+    # --- DASHBOARD ---
+    k1, k2, k3 = st.columns(3)
+    k1.metric("💰 Saldo Disponible", formato_moneda(saldo_disponible), help="Dinero real guardado.")
+    k2.metric("📥 Ahorro Total", formato_moneda(total_entradas))
+    k3.metric("⚠️ Deuda Pendiente", formato_moneda(total_deuda), delta_color="inverse")
+
+    st.markdown("---")
+
+    tab_ingreso, tab_retiro, tab_hist = st.tabs(["🟠 INGRESAR DINERO", "💸 RETIRAR DINERO", "📜 EXTRACTO"])
+
+    # --- TAB 1: INGRESAR (PAGAR DEUDAS) ---
+    with tab_ingreso:
+        st.subheader("Registrar Ahorro")
         
-        # Formatear columnas
-        for c in ["Venta_Total", "Efectivo_Real", "Diferencia"]:
-            if c in df_h.columns:
-                df_h[c] = pd.to_numeric(df_h[c], errors='coerce').apply(formato_moneda)
+        if not pendientes.empty:
+            st.info(f"Tienes **{len(pendientes)} días** sin transferir el ahorro.")
+            
+            # Crear lista bonita para el selectbox
+            # Formato: "2025-12-18 | Sugerido: $ 50.000"
+            opciones = pendientes.apply(
+                lambda x: f"{x['Fecha']} | Sugerido: {formato_moneda(x['Monto_Profit'])}", 
+                axis=1
+            ).tolist()
+            
+            seleccion = st.selectbox("Selecciona el día que vas a pagar:", opciones)
+            
+            # Recuperar datos de la selección
+            if seleccion:
+                fecha_sel = seleccion.split(" | ")[0]
+                monto_sugerido = pendientes[pendientes["Fecha"] == fecha_sel].iloc[0]["Monto_Profit"]
                 
-        st.dataframe(
-            df_h[["Fecha", "Z_Report", "Venta_Total", "Efectivo_Real", "Diferencia", "Notas"]],
-            use_container_width=True, hide_index=True
-        )
-    else:
-        st.info("Aún no hay cierres registrados. (Se creará la hoja al guardar el primero).")
+                c1, c2 = st.columns(2)
+                monto_real = c1.number_input("Monto a Transferir", value=float(monto_sugerido), step=5000.0)
+                nota_ingreso = c2.text_input("Nota (Opcional)", placeholder="Ej: Transferencia Nequi")
+                
+                if st.button("✅ CONFIRMAR INGRESO", type="primary"):
+                    if registrar_movimiento(ws_banco, "ENTRADA", monto_real, fecha_sel, "Admin", nota_ingreso):
+                        st.balloons()
+                        st.success("¡Dinero en el banco!")
+                        time.sleep(1)
+                        st.rerun()
+        else:
+            st.success("🎉 ¡Estás al día! No debes nada al fondo.")
+            
+            # Opción de Aporte Voluntario
+            if st.checkbox("Hacer un Aporte Extra Voluntario"):
+                ce1, ce2 = st.columns(2)
+                m_extra = ce1.number_input("Monto Extra", step=10000.0)
+                n_extra = ce2.text_input("Motivo", value="Aporte Extra")
+                if st.button("Guardar Extra"):
+                    if registrar_movimiento(ws_banco, "ENTRADA", m_extra, datetime.now(ZONA_HORARIA).strftime("%Y-%m-%d"), "Admin", n_extra):
+                        st.success("Guardado."); time.sleep(1); st.rerun()
+
+    # --- TAB 2: RETIROS ---
+    with tab_retiro:
+        st.subheader("Retirar Fondos")
+        
+        c_r1, c_r2 = st.columns(2)
+        monto_ret = c_r1.number_input("Monto a Retirar", min_value=0.0, step=50000.0)
+        motivo = c_r2.text_input("Motivo del Retiro", placeholder="Ej: Compra de Activo")
+        responsable = st.text_input("Responsable")
+        
+        if st.button("🚨 REGISTRAR RETIRO", type="primary"):
+            if 0 < monto_ret <= saldo_disponible:
+                if motivo and responsable:
+                    if registrar_movimiento(ws_banco, "SALIDA", monto_ret, datetime.now(ZONA_HORARIA).strftime("%Y-%m-%d"), responsable, motivo):
+                        st.success("Retiro exitoso."); time.sleep(1); st.rerun()
+                else:
+                    st.warning("Escribe motivo y responsable.")
+            else:
+                st.error(f"Fondos insuficientes. Máximo: {formato_moneda(saldo_disponible)}")
+
+    # --- TAB 3: EXTRACTO ---
+    with tab_hist:
+        st.subheader("Movimientos")
+        if not df_banco.empty:
+            df_show = df_banco.sort_values("ID_Movimiento", ascending=False).copy()
+            df_show["Monto"] = df_show["Monto"].apply(formato_moneda)
+            
+            # Colorear tipo
+            def color_tipo(val):
+                return 'color: green; font-weight: bold' if val == "ENTRADA" else 'color: red; font-weight: bold'
+
+            st.dataframe(
+                df_show[["Fecha_Registro", "Tipo_Movimiento", "Monto", "Fecha_Referencia", "Notas", "Responsable"]]
+                .style.applymap(color_tipo, subset=["Tipo_Movimiento"]),
+                use_container_width=True,
+                hide_index=True
+            )
+        else:
+            st.info("Sin movimientos.")
