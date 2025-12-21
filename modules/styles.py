@@ -9,22 +9,14 @@ def cargar_estilos():
             font-family: 'Poppins', sans-serif;
         }
 
-        /* --- SIDEBAR PREMIUM --- */
+        /* --- OCULTAR BARRA LATERAL POR COMPLETO --- */
         [data-testid="stSidebar"] {
-            background-color: #f8f9fa;
+            display: none !important;
         }
-        
-        .nav-link {
-            border-radius: 12px !important;
-            margin: 3px 0px !important;
+        [data-testid="stSidebarCollapsedControl"] {
+            display: none !important;
         }
-
-        .nav-link-selected {
-            background-color: #580f12 !important;
-            color: white !important;
-            border: 2px solid #c5a065 !important;
-            border-radius: 12px !important;
-        }
+        .css-163ttbj { display: none; } /* Selector adicional para algunas versiones */
 
         /* --- TARJETAS DEL INICIO --- */
         .card-modulo {
@@ -74,10 +66,5 @@ def cargar_estilos():
         /* --- LIMPIEZA --- */
         header {visibility: hidden;}
         footer {visibility: hidden;}
-        
-        /* Contenedor de retorno */
-        .btn-volver {
-            margin-bottom: 20px;
-        }
     </style>
     """, unsafe_allow_html=True)
