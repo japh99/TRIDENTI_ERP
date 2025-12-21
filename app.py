@@ -13,14 +13,23 @@ from modules import (
     auditoria_inv, bajas, configuracion
 )
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Tridenti ERP", page_icon="🔱", layout="wide")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(
+    page_title="Tridenti ERP V7", 
+    page_icon="🔱", 
+    layout="wide", 
+    initial_sidebar_state="expanded"
+)
 
 # --- CREDENCIALES ---
 USUARIOS = {"admin": "1234", "cocina": "0000"}
 
-# --- COOKIES ---
-cookie_manager = stx.CookieManager()
+# --- GESTOR DE COOKIES ---
+@st.cache_resource
+def get_cookie_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_cookie_manager()
 
 # --- LÓGICA DE NAVEGACIÓN ---
 if "menu_index" not in st.session_state: 
@@ -35,54 +44,71 @@ def cerrar_sesion():
     st.session_state["usuario_valido"] = False
     st.rerun()
 
-# --- COMPONENTE DE TARJETA ---
+# --- COMPONENTE VISUAL: TARJETA DORADA ---
 def dibujar_card(titulo, desc, emoji, indice):
+    """Genera el cuadro con borde dorado y el botón de entrada."""
     st.markdown(f"""
         <div class="card-modulo">
-            <div style="font-size: 2.5rem;">{emoji}</div>
-            <h3>{titulo}</h3>
-            <p>{desc}</p>
+            <div style="font-size: 2.5rem; margin-bottom: 10px;">{emoji}</div>
+            <h3 style="margin: 0; color: #580f12; font-size: 1.2rem;">{titulo}</h3>
+            <p style="margin: 5px 0 15px 0; color: #666; font-size: 0.85rem;">{desc}</p>
         </div>
     """, unsafe_allow_html=True)
-    if st.button(f"Entrar a {titulo}", key=f"btn_{indice}", use_container_width=True):
+    if st.button(f"Entrar a {titulo}", key=f"btn_home_{indice}", use_container_width=True):
         ir_a(indice)
 
-# --- DASHBOARD HOME ---
+# --- PANTALLA DE INICIO (DASHBOARD) ---
 def show_dashboard_home():
-    st.markdown(f"# 🔱 Panel de Control")
-    st.markdown(f"Bienvenido al sistema integral de gestión.")
+    st.markdown(f"# 🔱 Panel de Control Principal")
+    st.markdown(f"Bienvenido al sistema Tridenti V7. Gestiona tu operación desde aquí.")
     st.write("")
 
-    # --- SECCIÓN 1 ---
+    # --- FILA 1: ESTRATEGIA & FINANZAS ---
     st.markdown("#### 💰 ESTRATEGIA Y FINANZAS")
     f1 = st.columns(5)
     with f1[0]: dibujar_card("Inteligencia", "KPIs de Negocio", "💡", 1)
     with f1[1]: dibujar_card("Matriz BCG", "Análisis de Platos", "⭐", 2)
     with f1[2]: dibujar_card("Financiero", "Gastos Fijos", "🏛️", 3)
     with f1[3]: dibujar_card("Tesorería", "Cierre de Caja", "🔒", 4)
-    with f1[4]: dibujar_card("Banco Profit", "Fondos de Ahorro", "🐷", 5)
+    with f1[4]: dibujar_card("Banco Profit", "Ahorros Reales", "🐷", 5)
 
-    # --- SECCIÓN 2 ---
+    st.write("")
+
+    # --- FILA 2: OPERACIÓN DIARIA ---
     st.markdown("#### ⚙️ OPERACIÓN DIARIA")
     f2 = st.columns(5)
     with f2[0]: dibujar_card("Ventas", "Historial Diario", "📈", 6)
-    with f2[1]: dibujar_card("Inventario", "Control de Stock", "📦", 7)
+    with f2[1]: dibujar_card("Inventario", "Kardex / Stock", "📦", 7)
     with f2[2]: dibujar_card("Sugeridos", "Pedidos Compra", "📝", 8)
     with f2[3]: dibujar_card("Compras", "Facturación", "🛒", 9)
     with f2[4]: dibujar_card("Gastos", "Caja Menor", "💸", 10)
 
-    # --- SECCIÓN 3 ---
-    st.markdown("#### 🧠 INGENIERÍA Y CONFIGURACIÓN")
+    st.write("")
+
+    # --- FILA 3: INGENIERÍA DE PRODUCTO ---
+    st.markdown("#### 🧠 INGENIERÍA Y CONTROL")
     f3 = st.columns(5)
-    with f3[0]: dibujar_card("Insumos", "Maestro de Artículos", "🍎") # Cambiar indice según corresponda
-    with f3[1]: dibujar_card("Recetas", "Fichas Técnicas", "📖", 13)
-    with f3[2]: dibujar_card("Activos", "Mantenimiento", "🛠️", 14)
-    with f3[3]: dibujar_card("Configuración", "Ajustes de Sistema", "⚙️", 18)
-    with f3[4]: 
-        st.markdown("<div style='height: 180px; display: flex; align-items: center;'>", unsafe_allow_html=True)
-        if st.button("🔴 CERRAR SESIÓN", use_container_width=True, type="primary"):
+    with f3[0]: dibujar_card("Insumos", "Maestro Artículos", "🍎", 11)
+    with f3[1]: dibujar_card("Sub-Recetas", "Bases y Salsas", "🔥", 12)
+    with f3[2]: dibujar_card("Recetas", "Fichas Técnicas", "📖", 13)
+    with f3[3]: dibujar_card("Activos", "Mantenimiento", "🛠️", 14)
+    with f3[4]: dibujar_card("Proveedores", "Contactos", "🤝", 15)
+
+    st.write("")
+
+    # --- FILA 4: AJUSTES Y SALIDA ---
+    st.markdown("#### 🛡️ CONTROL Y AJUSTES")
+    f4 = st.columns(5)
+    with f4[0]: dibujar_card("Auditoría", "Conteos Inv.", "✅", 16)
+    with f4[1]: dibujar_card("Reportar Daño", "Mermas/Bajas", "⚠️", 17)
+    with f4[2]: dibujar_card("Configuración", "Ajustes Sistema", "⚙️", 18)
+    
+    with f4[3]: st.write("") # Espacio vacío
+
+    with f4[4]:
+        st.markdown("<div style='height: 40px;'></div>", unsafe_allow_html=True)
+        if st.button("🔒 CERRAR SESIÓN", type="primary", use_container_width=True):
             cerrar_sesion()
-        st.markdown("</div>", unsafe_allow_html=True)
 
 # --- LOGIN ---
 def login_form(sheet):
@@ -102,14 +128,17 @@ def login_form(sheet):
                     st.rerun()
                 else: st.error("Credenciales incorrectas")
 
-# --- MAIN ---
+# --- FUNCIÓN PRINCIPAL (MAIN) ---
 def main():
     styles.cargar_estilos()
     sheet = conectar_google_sheets()
+    if not sheet: st.error("Error al conectar BD"); return
+
+    # --- GESTIÓN DE SESIÓN ---
+    if "usuario_valido" not in st.session_state: 
+        st.session_state["usuario_valido"] = False
     
-    if "usuario_valido" not in st.session_state: st.session_state["usuario_valido"] = False
-    
-    # Check cookies
+    # Intento de auto-login por cookie
     if not st.session_state["usuario_valido"]:
         user_cookie = cookie_manager.get("tridenti_user")
         if user_cookie:
@@ -120,6 +149,8 @@ def main():
     if not st.session_state["usuario_valido"]:
         login_form(sheet)
         return
+
+    rol = st.session_state["rol_actual"]
 
     # --- SIDEBAR NAVEGACIÓN ---
     opciones = [
@@ -134,31 +165,47 @@ def main():
     ]
 
     with st.sidebar:
-        st.markdown("<h2 style='color: #580f12;'>🔱 TRIDENTI V7</h2>", unsafe_allow_html=True)
-        if st.button("🏠 VOLVER AL INICIO", use_container_width=True):
+        st.markdown(f"<h3 style='color: #580f12;'>🔱 TRIDENTI V7</h3>", unsafe_allow_html=True)
+        st.caption(f"Perfil: {rol}")
+        
+        # Botón para volver al Inicio rápido
+        if st.button("🏠 VOLVER AL INICIO", use_container_width=True, type="secondary"):
             ir_a(0)
+            
+        st.markdown("---")
         
         selected = option_menu(
-            menu_title=None, options=opciones, icons=iconos, 
+            menu_title=None, 
+            options=opciones, 
+            icons=iconos, 
             default_index=st.session_state["menu_index"],
-            styles={"nav-link-selected": {"background-color": "#580f12"}}
+            styles={
+                "nav-link-selected": {"background-color": "#580f12"},
+                "nav-link": {"font-family": "Poppins, sans-serif", "font-size": "0.9rem"}
+            }
         )
         
-        # Sincronizar index
+        # Sincronizar el estado del menú
         new_idx = opciones.index(selected)
         if new_idx != st.session_state["menu_index"]:
             st.session_state["menu_index"] = new_idx
             st.rerun()
+        
+        st.markdown("---")
+        if st.button("🔒 CERRAR SESIÓN"):
+            cerrar_sesion()
 
-    # --- ROUTER ---
-    # Botón de regreso rápido si no estamos en Inicio
-    if st.session_state["menu_index"] != 0:
-        if st.button("⬅️ VOLVER AL INICIO"):
+    # --- ROUTER DE CONTENIDO ---
+    idx = st.session_state["menu_index"]
+
+    # SI NO ESTOY EN INICIO, MOSTRAR BOTÓN DE REGRESO RÁPIDO
+    if idx != 0:
+        c_back1, c_back2 = st.columns([1, 4])
+        if c_back1.button("⬅️ REGRESAR AL PANEL"):
             ir_a(0)
         st.markdown("---")
 
-    idx = st.session_state["menu_index"]
-    
+    # CARGA DE MÓDULOS SEGÚN EL ÍNDICE
     if idx == 0: show_dashboard_home()
     elif idx == 1: inteligencia.show(sheet)
     elif idx == 2: matriz_bcg.show(sheet)
