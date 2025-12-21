@@ -9,7 +9,7 @@ HOJA_VENTAS = "LOG_VENTAS_LOYVERSE"
 HOJA_GASTOS = "LOG_GASTOS"
 HOJA_CIERRES = "LOG_CIERRES_CAJA"
 
-# Encabezados EXACTOS según tu Excel (Saldo_Real_Cor con 'r')
+# Encabezados Estándar
 HEADERS_CIERRE = [
     "Fecha", "Hora_Cierre", "Saldo_Teorico_E", "Saldo_Real_Cor", 
     "Diferencia", "Total_Nequi", "Total_Tarjetas", "Notas", 
@@ -33,16 +33,14 @@ def cargar_movimientos_desglosados(sheet, fecha_str):
             df_dia = df_raw[df_raw["Fecha"] == fecha_str].copy()
             df_dia["Total_Dinero"] = pd.to_numeric(df_dia["Total_Dinero"], errors='coerce').fillna(0)
             
-            # --- AGRUPACIÓN POR TICKET ---
-            # Sumamos todos los productos que tengan el mismo número de recibo
+            # Agrupar por Recibo
             df_grouped = df_dia.groupby("Numero_Recibo").agg({
                 "Total_Dinero": "sum",
                 "Metodo_Pago_Loyverse": "first",
                 "Hora": "first"
             }).reset_index()
 
-            # Inicializar columnas de desglose real para auditoría
-            # Si Loyverse dice Efectivo, lo ponemos en la columna Efectivo_Real, etc.
+            # Inicializar desglose
             df_grouped["Efectivo_Real"] = df_grouped.apply(lambda x: x["Total_Dinero"] if x["Metodo_Pago_Loyverse"] == "Efectivo" else 0.0, axis=1)
             df_grouped["Nequi_Real"] = df_grouped.apply(lambda x: x["Total_Dinero"] if "Nequi" in str(x["Metodo_Pago_Loyverse"]) else 0.0, axis=1)
             df_grouped["Tarjeta_Real"] = df_grouped.apply(lambda x: x["Total_Dinero"] if "Tarjeta" in str(x["Metodo_Pago_Loyverse"]) else 0.0, axis=1)
@@ -57,164 +55,130 @@ def cargar_movimientos_desglosados(sheet, fecha_str):
 
 def show(sheet):
     st.title("🔐 Tesorería: Cierre de Caja")
-    st.caption("Auditoría de tickets, soporte para pagos mixtos y arqueo físico.")
     
     if not sheet: return
 
+    # CREAR PESTAÑAS PARA ORDENAR EL HISTORIAL
+    tab_cierre, tab_historial = st.tabs(["📝 PROCESAR CIERRE", "📜 HISTORIAL DE CIERRES"])
+
     hoy = datetime.now(ZONA_HORARIA).date()
-    fecha_cierre = st.date_input("Fecha de Trabajo", value=hoy)
-    fecha_str = fecha_cierre.strftime("%Y-%m-%d")
+    
+    with tab_cierre:
+        fecha_cierre = st.date_input("Fecha de Trabajo", value=hoy)
+        fecha_str = fecha_cierre.strftime("%Y-%m-%d")
 
-    # 1. VERIFICAR CIERRE EXISTENTE
-    ws_c = sheet.worksheet(HOJA_CIERRES)
-    df_c = leer_datos_seguro(ws_c)
-    cierre_previo = None
-    if not df_c.empty and "Fecha" in df_c.columns:
-        res = df_c[df_c["Fecha"] == fecha_str]
-        if not res.empty: cierre_previo = res.iloc[0]
+        # Verificar cierre
+        ws_c = sheet.worksheet(HOJA_CIERRES)
+        df_c = leer_datos_seguro(ws_c)
+        cierre_previo = None
+        if not df_c.empty:
+            df_c.columns = df_c.columns.str.strip() # LIMPIEZA DE ESPACIOS
+            res = df_c[df_c["Fecha"] == fecha_str]
+            if not res.empty: cierre_previo = res.iloc[0]
 
-    if cierre_previo is not None:
-        # --- MODO LECTURA: DÍA YA CERRADO ---
-        st.success(f"✅ DÍA CERRADO - Z-Report: {cierre_previo.get('Numero_Cierre_Loyverse', 'S/N')}")
-        
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Efectivo Contado", formato_moneda(cierre_previo.get('Saldo_Real_Cor', 0)))
-        
-        diff = float(limpiar_numero(cierre_previo.get('Diferencia', 0)))
-        c2.metric("Diferencia", formato_moneda(diff), delta=diff, delta_color="normal")
-        
-        c3.metric("Total Nequi", formato_moneda(cierre_previo.get('Total_Nequi', 0)))
-        c4.metric("Total Tarjetas", formato_moneda(cierre_previo.get('Total_Tarjetas', 0)))
-        
-        st.info(f"**Notas del Cierre:** {cierre_previo.get('Notas', 'Sin notas.')}")
-
-    else:
-        # --- MODO EDICIÓN: PROCESAR CIERRE ---
-        df_tickets, ws_v = cargar_movimientos_desglosados(sheet, fecha_str)
-        
-        if df_tickets is None or df_tickets.empty:
-            st.warning("⚠️ No se encontraron ventas registradas en esta fecha.")
+        if cierre_previo is not None:
+            st.success(f"✅ DÍA YA CERRADO - Z-Report: {cierre_previo.get('Numero_Cierre_Loyverse', 'S/N')}")
+            m1, m2, m3 = st.columns(3)
+            # Usamos .get para que si no encuentra la columna por una letra, no explote
+            m1.metric("Efectivo Contado", formato_moneda(cierre_previo.get('Saldo_Real_Cor', 0)))
+            m2.metric("Diferencia", formato_moneda(cierre_previo.get('Diferencia', 0)))
+            m3.metric("Profit Ahorrado", formato_moneda(cierre_previo.get('Profit_Retenido', 0)))
         else:
-            # 1. TABLA DE AUDITORÍA CON DESGLOSE MIXTO
-            with st.expander("🛠️ Auditoría de Tickets (Repartir Pagos Mixtos)", expanded=True):
-                st.write("Si el cajero cerró una cuenta por un método pero fue mixto, reparte el valor en las columnas.")
-                
-                # Columna de validación: suma de lo que el usuario digita
-                df_tickets["Suma_Auditada"] = df_tickets["Efectivo_Real"] + df_tickets["Nequi_Real"] + df_tickets["Tarjeta_Real"]
-                
-                df_ed = st.data_editor(
-                    df_tickets[["Hora", "Numero_Recibo", "Total_Dinero", "Efectivo_Real", "Nequi_Real", "Tarjeta_Real", "Suma_Auditada"]],
-                    column_config={
-                        "Total_Dinero": st.column_config.NumberColumn("Total Ticket", format="$%d", disabled=True),
-                        "Efectivo_Real": st.column_config.NumberColumn("Efectivo $", format="$%d", min_value=0.0),
-                        "Nequi_Real": st.column_config.NumberColumn("Nequi $", format="$%d", min_value=0.0),
-                        "Tarjeta_Real": st.column_config.NumberColumn("Tarjeta $", format="$%d", min_value=0.0),
-                        "Suma_Auditada": st.column_config.NumberColumn("Validación", format="$%d", disabled=True),
-                        "Numero_Recibo": "Ticket #"
-                    },
-                    hide_index=True, use_container_width=True, key="editor_tesoreria_mixto"
-                )
-
-                # Validar si hay errores de suma
-                df_ed["Dif_Val"] = abs(df_ed["Total_Dinero"] - (df_ed["Efectivo_Real"] + df_ed["Nequi_Real"] + df_ed["Tarjeta_Real"]))
-                error_validacion = df_ed[df_ed["Dif_Val"] > 1]
-                
-                if not error_validacion.empty:
-                    st.error(f"⚠️ Atención: Hay {len(error_validacion)} tickets donde el desglose no suma el total del recibo.")
-
-            # 2. CÁLCULOS DINÁMICOS PARA RESUMEN
-            v_total = df_ed["Total_Dinero"].sum()
-            v_efec = df_ed["Efectivo_Real"].sum()
-            v_nequi = df_ed["Nequi_Real"].sum()
-            v_tarj = df_ed["Tarjeta_Real"].sum()
+            df_tickets, ws_v = cargar_movimientos_desglosados(sheet, fecha_str)
             
-            # Cargar Gastos del día (solo en efectivo)
-            try:
-                ws_g = sheet.worksheet(HOJA_GASTOS)
-                df_g = leer_datos_seguro(ws_g)
-                g_efec = df_g[(df_g["Fecha"] == fecha_str) & (df_g["Metodo_Pago"].str.contains("Efectivo", na=False))]["Monto"].astype(float).sum()
-            except: g_efec = 0
-            
-            saldo_teo = v_efec - g_efec
-
-            # --- DASHBOARD DE RESUMEN ---
-            st.markdown("#### 📊 Resumen Financiero Auditado")
-            k1, k2, k3, k4 = st.columns(4)
-            k1.metric("VENTA TOTAL", formato_moneda(v_total))
-            k2.metric("Total Efectivo", formato_moneda(v_efec))
-            k3.metric("Total Nequi", formato_moneda(v_nequi))
-            k4.metric("Total Tarjetas", formato_moneda(v_tarj))
-
-            st.markdown("---")
-            st.markdown("#### 💵 Arqueo de Caja (Efectivo)")
-            a1, a2, a3 = st.columns(3)
-            a1.metric("(+) Entradas Efec.", formato_moneda(v_efec))
-            a2.metric("(-) Gastos Caja", formato_moneda(g_efec))
-            a3.metric("(=) DEBE HABER", formato_moneda(saldo_teo))
-
-            c_real, c_z = st.columns(2)
-            real = c_real.number_input("¿Cuánto efectivo contaste físicamente?", min_value=0.0, step=500.0)
-            z_rep = c_z.text_input("Z-Report / Número de Cierre")
-            
-            # --- SEMÁFORO DE DIFERENCIA ---
-            diff = real - saldo_teo
-            if diff == 0:
-                st.success(f"### ✅ CORRECTO: {formato_moneda(diff)}")
-            elif diff > 0:
-                st.info(f"### 🔵 SOBRANTE: {formato_moneda(diff)}")
+            if df_tickets is None or df_tickets.empty:
+                st.warning("No hay ventas registradas en esta fecha.")
             else:
-                st.error(f"### 🔴 FALTANTE: {formato_moneda(diff)}")
+                with st.expander("🛠️ Auditoría de Tickets (Pagos Mixtos)", expanded=True):
+                    df_tickets["Suma_Auditada"] = df_tickets["Efectivo_Real"] + df_tickets["Nequi_Real"] + df_tickets["Tarjeta_Real"]
+                    df_ed = st.data_editor(
+                        df_tickets[["Hora", "Numero_Recibo", "Total_Dinero", "Efectivo_Real", "Nequi_Real", "Tarjeta_Real", "Suma_Auditada"]],
+                        column_config={
+                            "Total_Dinero": st.column_config.NumberColumn("Valor Ticket", format="$%d", disabled=True),
+                            "Efectivo_Real": st.column_config.NumberColumn("Efectivo $", format="$%d"),
+                            "Nequi_Real": st.column_config.NumberColumn("Nequi $", format="$%d"),
+                            "Tarjeta_Real": st.column_config.NumberColumn("Tarjeta $", format="$%d"),
+                            "Suma_Auditada": st.column_config.NumberColumn("Suma", format="$%d", disabled=True),
+                        },
+                        hide_index=True, use_container_width=True, key="editor_teso_final"
+                    )
+                    errores_suma = df_ed[abs(df_ed["Total_Dinero"] - df_ed["Suma_Auditada"]) > 1]
+                    if not errores_suma.empty:
+                        st.error("⚠️ El desglose no coincide con el total en algunos tickets.")
 
-            # NOTAS Y PROFIT
-            pct_prof = st.slider("% Profit Sugerido", 1, 15, 5)
-            monto_prof = v_total * (pct_prof / 100)
-            st.info(f"💡 Ahorro Sugerido: {formato_moneda(monto_prof)}")
-            
-            notas_cierre = st.text_area("Notas del Cierre")
+                # KPIs
+                v_total = df_ed["Total_Dinero"].sum()
+                v_efec = df_ed["Efectivo_Real"].sum()
+                v_nequi = df_ed["Nequi_Real"].sum()
+                v_tarj = df_ed["Tarjeta_Real"].sum()
+                
+                try:
+                    ws_g = sheet.worksheet(HOJA_GASTOS)
+                    df_g = leer_datos_seguro(ws_g)
+                    g_efec = df_g[(df_g["Fecha"] == fecha_str) & (df_g["Metodo_Pago"].str.contains("Efectivo", na=False))]["Monto"].astype(float).sum()
+                except: g_efec = 0
+                
+                saldo_teo = v_efec - g_efec
 
-            if st.button("🔒 GUARDAR CIERRE DEFINITIVO", type="primary", use_container_width=True):
-                if not error_validacion.empty:
-                    st.warning("Corrige los tickets marcados en rojo antes de guardar.")
-                elif not z_rep:
-                    st.warning("Ingresa el número de Z-Report.")
-                else:
-                    datos_finales = {
-                        "Fecha": fecha_str,
-                        "Hora_Cierre": datetime.now(ZONA_HORARIA).strftime("%H:%M"),
-                        "Saldo_Teorico_E": saldo_teo,
-                        "Saldo_Real_Cor": real,
-                        "Diferencia": diff,
-                        "Total_Nequi": v_nequi,
-                        "Total_Tarjetas": v_tarj,
-                        "Notas": notas_cierre,
-                        "Profit_Retenido": monto_prof,
-                        "Estado_Ahorro": "Pendiente",
-                        "Numero_Cierre_Loyverse": z_rep
-                    }
-                    # Subir a Google Sheets
-                    nueva_fila = [str(datos_finales.get(h, "")) for h in HEADERS_CIERRE]
-                    ws_c.append_row(nueva_fila)
-                    st.balloons()
-                    time.sleep(1)
-                    st.rerun()
+                st.markdown("#### 📊 Resumen Financiero Auditado")
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("VENTA TOTAL", formato_moneda(v_total))
+                k2.metric("Total Efectivo", formato_moneda(v_efec))
+                k3.metric("Total Nequi", formato_moneda(v_nequi))
+                k4.metric("Total Tarjetas", formato_moneda(v_tarj))
 
-    # --- TABLA DE HISTORIAL DE CIERRES ---
-    st.markdown("---")
-    st.subheader("📜 Historial de Cierres")
-    try:
-        df_hist = leer_datos_seguro(sheet.worksheet(HOJA_CIERRES))
-        if not df_hist.empty:
-            # Ordenar por fecha reciente y tomar los últimos 10
-            df_hist = df_hist.sort_values("Fecha", ascending=False).head(10)
-            
-            # Formatear montos para la tabla
-            for col in ["Saldo_Teorico_E", "Saldo_Real_Cor", "Diferencia", "Profit_Retenido"]:
-                if col in df_hist.columns:
-                    df_hist[col] = pd.to_numeric(df_hist[col], errors='coerce').apply(formato_moneda)
-            
-            columnas_finales = ["Fecha", "Numero_Cierre_Loyverse", "Saldo_Teorico_E", "Saldo_Real_Cor", "Diferencia", "Notas"]
-            st.dataframe(df_hist[columnas_finales], use_container_width=True, hide_index=True)
-        else:
-            st.write("No hay cierres previos registrados.")
-    except Exception as e:
-        st.caption(f"Cargando historial de cierres... {e}")
+                st.markdown("---")
+                st.markdown("#### 💵 Arqueo de Caja")
+                a1, a2, a3 = st.columns(3)
+                a1.metric("(+) Entradas Efec.", formato_moneda(v_efec))
+                a2.metric("(-) Gastos Caja", formato_moneda(g_efec))
+                a3.metric("(=) DEBE HABER", formato_moneda(saldo_teo))
+
+                real = st.number_input("¿Cuánto efectivo contaste?", min_value=0.0, step=500.0)
+                diff = real - saldo_teo
+                
+                if diff == 0: st.success(f"### ✅ CORRECTO: {formato_moneda(diff)}")
+                else: st.error(f"### 🔴 DIFERENCIA: {formato_moneda(diff)}")
+
+                z_rep = st.text_input("Z-Report #")
+                
+                if st.button("🔒 GUARDAR CIERRE DEFINITIVO", type="primary", use_container_width=True):
+                    if not errores_suma.empty: st.warning("Corrige el desglose.")
+                    elif not z_rep: st.warning("Ingresa Z-Report.")
+                    else:
+                        datos = {
+                            "Fecha": fecha_str, "Hora_Cierre": datetime.now(ZONA_HORARIA).strftime("%H:%M"),
+                            "Saldo_Teorico_E": saldo_teo, "Saldo_Real_Cor": real,
+                            "Diferencia": diff, "Total_Nequi": v_nequi, "Total_Tarjetas": v_tarj,
+                            "Notas": "", "Profit_Retenido": v_total * 0.05,
+                            "Estado_Ahorro": "Pendiente", "Numero_Cierre_Loyverse": z_rep
+                        }
+                        ws_c.append_row([str(datos.get(h, "")) for h in HEADERS_CIERRE])
+                        st.balloons(); time.sleep(1); st.rerun()
+
+    # --- PESTAÑA DE HISTORIAL CORREGIDA ---
+    with tab_historial:
+        st.subheader("📜 Historial de Cierres")
+        try:
+            df_h = leer_datos_seguro(sheet.worksheet(HOJA_CIERRES))
+            if not df_h.empty:
+                # 1. Limpiar nombres de columnas por si hay espacios en el Excel
+                df_h.columns = df_h.columns.str.strip()
+                
+                # 2. Ordenar por fecha
+                df_h = df_h.sort_values("Fecha", ascending=False).head(15)
+                
+                # 3. Definir qué columnas queremos mostrar (Solo las que existan)
+                cols_posibles = ["Fecha", "Numero_Cierre_Loyverse", "Saldo_Teorico_E", "Saldo_Real_Cor", "Diferencia", "Profit_Retenido"]
+                cols_visibles = [c for c in cols_posibles if c in df_h.columns]
+                
+                # 4. Formatear dinero de forma segura
+                for col in cols_visibles:
+                    if col != "Fecha" and col != "Numero_Cierre_Loyverse":
+                        df_h[col] = pd.to_numeric(df_h[col], errors='coerce').apply(formato_moneda)
+                
+                st.dataframe(df_h[cols_visibles], use_container_width=True, hide_index=True)
+            else:
+                st.info("No hay cierres registrados.")
+        except Exception as e:
+            st.error(f"Error al cargar historial: {e}")
