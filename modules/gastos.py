@@ -15,15 +15,20 @@ def formato_moneda_co(valor):
 
 def guardar_gasto(sheet, datos):
     try:
-        try: ws = sheet.worksheet(HOJA_GASTOS)
+        try: 
+            ws = sheet.worksheet(HOJA_GASTOS)
         except:
-            ws = sheet.add_worksheet(title=HOJA_GASTOS, rows="1000", cols="10")
+            # Si no existe, crearla con los 9 encabezados exactos
+            ws = sheet.add_worksheet(title=HOJA_GASTOS, rows="2000", cols="10")
             ws.append_row(["ID_Gasto", "Fecha", "Hora", "Categoria", "Descripcion", "Monto", "Metodo_Pago", "Responsable", "URL_Foto"])
         
-        ws.append_row([datos])
+        # --- CORRECCIÓN AQUÍ ---
+        # 1. Quitamos los corchetes extras [ ] alrededor de datos
+        # 2. Agregamos value_input_option='USER_ENTERED' para que Google entienda los números
+        ws.append_row(datos, value_input_option='USER_ENTERED')
         return True
     except Exception as e:
-        st.error(f"Error guardando: {e}")
+        st.error(f"Error detallado en Sheets: {e}")
         return False
 
 def show(sheet):
@@ -43,7 +48,6 @@ def show(sheet):
             fecha_hoy = datetime.now(ZONA_HORARIA).date()
             fecha = st.date_input("Fecha", value=fecha_hoy)
             
-            # Categorías
             categoria = st.selectbox("Categoría", [
                 "OPERATIVO (Hielo, Gas, Aseo)",
                 "MATERIA PRIMA (Urgencias)",
@@ -54,7 +58,7 @@ def show(sheet):
                 "OTROS"
             ])
             
-            desc = st.text_area("Descripción", placeholder="Ej: Taxi para llevar pedido a la 80")
+            desc = st.text_area("Descripción", placeholder="Ej: Taxi para llevar pedido")
             
         with col_der:
             st.subheader("Valores")
@@ -73,12 +77,9 @@ def show(sheet):
                     url_foto = "Sin Foto"
                     
                     if foto:
-                        # ORGANIZACIÓN DE CARPETAS EN CLOUD
-                        # Carpeta Raíz: GASTOS_VARIABLES
-                        # Subcarpeta: TRANSPORTE, OPERATIVO, etc.
-                        nombre_carpeta = categoria.split(" ")[0].upper() # Toma la primera palabra (OPERATIVO, TRANSPORTE...)
-                        
-                        url_foto = subir_foto_drive(foto, subcarpeta=nombre_carpeta, carpeta_raiz="GASTOS_VARIABLES")
+                        # Nombre de carpeta basado en la categoría
+                        nombre_cat = categoria.split(" ")[0].upper()
+                        url_foto = subir_foto_drive(foto, subcarpeta=nombre_cat, carpeta_raiz="GASTOS_VARIABLES")
                     
                     if "Error" in url_foto:
                         status.update(label="❌ Error en foto", state="error")
@@ -87,13 +88,14 @@ def show(sheet):
                         st.write("Guardando en base de datos...")
                         hora_actual = datetime.now(ZONA_HORARIA).strftime("%H:%M")
                         
+                        # Lista de datos (9 elementos)
                         nuevo_gasto = [
                             generar_id(),
                             str(fecha),
                             hora_actual,
                             categoria,
                             desc,
-                            monto,
+                            float(monto), # Aseguramos que sea número
                             metodo,
                             responsable,
                             url_foto
@@ -117,17 +119,20 @@ def show(sheet):
             df = leer_datos_seguro(ws)
             
             if not df.empty:
-                df = df.iloc[::-1] # Orden inverso
+                # Convertir Monto a numérico para KPIs y formato
+                df["Monto"] = pd.to_numeric(df["Monto"], errors='coerce').fillna(0)
                 
-                # KPIs
-                total_gastado = pd.to_numeric(df["Monto"], errors='coerce').sum()
+                # Invertir para ver el más reciente primero
+                df_view = df.iloc[::-1].copy()
+                
+                total_gastado = df["Monto"].sum()
                 st.metric("Total Gastado (Histórico)", formato_moneda_co(total_gastado))
                 
-                if "Monto" in df.columns:
-                    df["Monto"] = pd.to_numeric(df["Monto"], errors='coerce').apply(formato_moneda_co)
+                # Formatear solo para visualización
+                df_view["Monto"] = df_view["Monto"].apply(formato_moneda_co)
 
                 st.dataframe(
-                    df[["Fecha", "Categoria", "Descripcion", "Monto", "Responsable", "URL_Foto"]],
+                    df_view[["Fecha", "Categoria", "Descripcion", "Monto", "Responsable", "URL_Foto"]],
                     use_container_width=True,
                     hide_index=True,
                     column_config={"URL_Foto": st.column_config.LinkColumn("Ver Recibo")}
