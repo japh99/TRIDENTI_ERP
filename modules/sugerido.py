@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import urllib.parse
-from utils import conectar_google_sheets
+# Agregamos leer_datos_seguro a los imports
+from utils import conectar_google_sheets, leer_datos_seguro
 
 # --- CONFIGURACIÓN ---
 HOJA_INSUMOS = "DB_INSUMOS"
@@ -12,8 +13,13 @@ def formato_moneda(valor):
     except: return str(valor)
 
 def limpiar_numero(valor):
-    try: return float(str(valor).replace(",", "."))
-    except: return 0.0
+    if pd.isna(valor) or valor == "" or valor is None: return 0.0
+    try: 
+        # Maneja tanto comas como puntos decimales
+        s = str(valor).replace(",", ".")
+        return float(s)
+    except: 
+        return 0.0
 
 def show(sheet):
     st.title("🛒 Sugerido de Compras & Presupuesto")
@@ -22,46 +28,45 @@ def show(sheet):
     
     if not sheet: return
 
-    # 1. CARGAR DATOS
+    # 1. CARGAR DATOS DE FORMA SEGURA
     try:
         ws = sheet.worksheet(HOJA_INSUMOS)
-        df = pd.DataFrame(ws.get_all_records())
+        # Usamos leer_datos_seguro para que si está vacía no rompa el código
+        df = leer_datos_seguro(ws)
     except:
         st.error("No se pudo leer la base de insumos.")
         return
 
-    # 2. PROCESAMIENTO NUMÉRICO
-    df["Stock_Actual_Gr"] = df["Stock_Actual_Gr"].apply(limpiar_numero)
-    df["Stock_Minimo_Gr"] = df["Stock_Minimo_Gr"].apply(limpiar_numero)
-    df["Factor_Conversion_Gr"] = df["Factor_Conversion_Gr"].apply(limpiar_numero)
-    df["Costo_Unitario"] = df["Costo_Ultima_Compra"].apply(limpiar_numero)
+    # --- VALIDACIÓN CRÍTICA PARA EVITAR KEYERROR ---
+    if df.empty or "Stock_Actual_Gr" not in df.columns:
+        st.success("🎉 **Inventario Limpio:** No hay insumos registrados para procesar sugeridos.")
+        return
+
+    # 2. PROCESAMIENTO NUMÉRICO (Ahora es seguro porque validamos arriba)
+    columnas_numericas = ["Stock_Actual_Gr", "Stock_Minimo_Gr", "Factor_Conversion_Gr", "Costo_Ultima_Compra"]
+    for col in columnas_numericas:
+        if col in df.columns:
+            df[col] = df[col].apply(limpiar_numero)
+        else:
+            df[col] = 0.0
+
+    df["Costo_Unitario"] = df["Costo_Ultima_Compra"]
     
-    # --- LA NUEVA LÓGICA DE VISUALIZACIÓN DETALLADA ---
+    # --- LÓGICA DE VISUALIZACIÓN ---
     def explicar_stock(row):
-        total_interno = row["Stock_Actual_Gr"] # Lo que hay en base de datos (g, ml, und)
+        total_interno = row["Stock_Actual_Gr"]
         factor = row["Factor_Conversion_Gr"]
-        unidad_compra = str(row["Unidad_Compra"])
+        unidad_compra = str(row.get("Unidad_Compra", "Unidad"))
         
         if factor <= 0: factor = 1
-        
         cantidad_compra = total_interno / factor
         
-        # CASO A: PESO (Gramos -> Kilos/Libras)
-        if "Kilo" in unidad_compra or "Libra" in unidad_compra or "Bulto" in unidad_compra:
-            # Ej: 2.5 Kilos (= 2500 g)
+        if "Kilo" in unidad_compra or "Libra" in unidad_compra:
             return f"{cantidad_compra:.2f} {unidad_compra} (= {total_interno:,.0f} g)"
-            
-        # CASO B: VOLUMEN (Mililitros -> Litros/Botellas)
-        elif "Litro" in unidad_compra or "Galón" in unidad_compra or "Botella" in unidad_compra:
-            # Ej: 1.5 Litros (= 1500 ml)
+        elif "Litro" in unidad_compra or "Botella" in unidad_compra:
             return f"{cantidad_compra:.2f} {unidad_compra} (= {total_interno:,.0f} ml)"
-            
-        # CASO C: PAQUETES (Unidades agrupadas)
         elif factor > 1:
-            # Ej: 4.3 Paquete x10 (= 43 unds)
             return f"{cantidad_compra:.1f} {unidad_compra} (= {total_interno:,.0f} unds)"
-            
-        # CASO D: UNITARIO (Factor 1)
         else:
             return f"{total_interno:,.0f} Unidades"
 
@@ -79,26 +84,23 @@ def show(sheet):
 
     df["Estado"] = df.apply(evaluar_stock, axis=1)
     
-    # 3. FILTRAR
+    # 3. FILTRAR PEDIDOS
     df_pedidos = df[df["Estado"].isin(["🔴 AGOTADO", "🔴 CRÍTICO", "🟡 ALERTA"])].copy()
     
-    # Sugerido en unidades de compra
-    df_pedidos["Cantidad_A_Pedir"] = (
-        ((df_pedidos["Stock_Minimo_Gr"] * 2) - df_pedidos["Stock_Actual_Gr"]) / 
-        df_pedidos["Factor_Conversion_Gr"].replace(0, 1)
-    ).clip(lower=0)
-    
-    df_pedidos["Cantidad_A_Pedir"] = df_pedidos["Cantidad_A_Pedir"].apply(lambda x: round(x, 1))
-
-    st.subheader("⚠️ Insumos que requieren atención")
-    
     if not df_pedidos.empty:
+        # Sugerido en unidades de compra
+        df_pedidos["Cantidad_A_Pedir"] = (
+            ((df_pedidos["Stock_Minimo_Gr"] * 2) - df_pedidos["Stock_Actual_Gr"]) / 
+            df_pedidos["Factor_Conversion_Gr"].replace(0, 1)
+        ).clip(lower=0).apply(lambda x: round(x, 1))
+
+        st.subheader("⚠️ Insumos que requieren atención")
         st.info("👇 Revisa la columna **'Stock Actual'** para ver el desglose.")
         
         df_editor = df_pedidos[[
             "Nombre_Insumo", 
             "Estado", 
-            "Stock_Explicado", # Usamos la nueva columna detallada
+            "Stock_Explicado", 
             "Costo_Unitario", 
             "Cantidad_A_Pedir"
         ]]
@@ -107,70 +109,187 @@ def show(sheet):
             df_editor,
             column_config={
                 "Nombre_Insumo": st.column_config.TextColumn("Insumo", disabled=True),
-                "Estado": st.column_config.TextColumn("Alerta", disabled=True, width="small"),
-                "Stock_Explicado": st.column_config.TextColumn("Stock Actual (Detalle)", disabled=True, width="large"),
+                "Estado": st.column_config.TextColumn("Alerta", disabled=True),
+                "Stock_Explicado": st.column_config.TextColumn("Stock Actual", disabled=True),
                 "Costo_Unitario": st.column_config.NumberColumn("Costo Unit.", format="$%d", disabled=True),
                 "Cantidad_A_Pedir": st.column_config.NumberColumn("🛒 A COMPRAR", required=True, min_value=0.0, step=0.5)
             },
             hide_index=True,
             use_container_width=True,
-            key="editor_sugerido"
+            key="editor_sugerido_v2"
         )
         
-        # Presupuesto
+        # Presupuesto y WhatsApp (Misma lógica que tenías)
         total_estimado = (df_final["Cantidad_A_Pedir"] * df_final["Costo_Unitario"]).sum()
+        st.metric("💰 Presupuesto Estimado", formato_moneda(total_estimado))
         
-        st.markdown("---")
-        c1, c2 = st.columns([2, 1])
-        c1.metric("💰 Presupuesto Estimado", formato_moneda(total_estimado))
-        
-        # Enviar
-        st.write("### 📤 Enviar Pedido")
-        col_dest, col_btn = st.columns([1, 1])
-        with col_dest:
-            celular = st.text_input("Enviar a (WhatsApp):", value="57", placeholder="Ej: 573001234567")
+        # --- WHATSAPP ---
+        celular = st.text_input("Enviar a (WhatsApp):", value="57")
+        if st.button("📲 GENERAR Y ENVIAR PEDIDO"):
+            texto_pedido = f"*REQUISICIÓN - {pd.Timestamp.now().strftime('%Y-%m-%d')}*\n\n"
+            items = 0
+            for _, row in df_final.iterrows():
+                if row["Cantidad_A_Pedir"] > 0:
+                    unidad = df[df["Nombre_Insumo"] == row["Nombre_Insumo"]].iloc[0]["Unidad_Compra"]
+                    texto_pedido += f"📦 {row['Cantidad_A_Pedir']} {unidad} - *{row['Nombre_Insumo']}*\n"
+                    items += 1
             
-        fecha_hoy = pd.Timestamp.now().strftime("%Y-%m-%d")
-        texto_pedido = f"*REQUISICIÓN DE COMPRA - {fecha_hoy}* 📋\n\n"
-        items_pedir = 0
-        
-        # Necesitamos recuperar la Unidad de Compra original para el mensaje
-        # Hacemos un cruce simple
-        for index, row in df_final.iterrows():
-            cant = row["Cantidad_A_Pedir"]
-            if cant > 0:
-                # Buscamos la unidad original en el DF principal
-                nombre_ins = row["Nombre_Insumo"]
-                unidad = df[df["Nombre_Insumo"] == nombre_ins].iloc[0]["Unidad_Compra"]
-                
-                texto_pedido += f"📦 {cant} {unidad} - *{nombre_ins}*\n"
-                items_pedir += 1
-        
-        texto_pedido += f"\n💰 *Valor Aprox:* {formato_moneda(total_estimado)}\n"
-        texto_pedido += "\nAtt: Sistema Tridenti ERP 🔱"
-        
-        texto_encoded = urllib.parse.quote(texto_pedido)
-        
-        with col_btn:
-            st.write("") 
-            st.write("") 
-            if items_pedir > 0:
-                if celular.strip() and celular != "57":
-                    link_whatsapp = f"https://wa.me/{celular.strip()}?text={texto_encoded}"
-                    label_btn = f"📲 ENVIAR REPORTE AHORA"
-                else:
-                    link_whatsapp = f"https://wa.me/?text={texto_encoded}"
-                    label_btn = "📲 SELECCIONAR CONTACTO"
-                
-                st.link_button(label_btn, link_whatsapp, type="primary", use_container_width=True)
+            if items > 0:
+                texto_pedido += f"\n*Valor Aprox:* {formato_moneda(total_estimado)}\n"
+                link = f"https://wa.me/{celular}?text={urllib.parse.quote(texto_pedido)}"
+                st.markdown(f'<a href="{link}" target="_blank">Click aquí para abrir WhatsApp</a>', unsafe_allow_html=True)
             else:
-                st.warning("Cantidades en 0.")
-
+                st.warning("No hay productos con cantidad mayor a 0.")
     else:
-        st.success("🎉 Inventario saludable.")
-        
+        st.success("🎉 Inventario saludable. No hay sugeridos de compra por ahora.")
+
     st.markdown("---")
     with st.expander("🔍 Ver Inventario Completo"):
-        # Mostramos la columna explicada también aquí
-        if "Stock_Explicado" in df.columns:
-            st.dataframe(df[["Nombre_Insumo", "Estado", "Stock_Explicado", "Stock_Minimo_Gr"]], use_container_width=True)
+        st.dataframe(df[["Nombre_Insumo", "Estado", "Stock_Explicado", "Stock_Minimo_Gr"]], use_container_width=True)import streamlit as st
+import pandas as pd
+import urllib.parse
+# Agregamos leer_datos_seguro a los imports
+from utils import conectar_google_sheets, leer_datos_seguro
+
+# --- CONFIGURACIÓN ---
+HOJA_INSUMOS = "DB_INSUMOS"
+
+def formato_moneda(valor):
+    if pd.isna(valor) or valor == "": return "$ 0"
+    try: return f"$ {int(float(valor)):,}".replace(",", ".")
+    except: return str(valor)
+
+def limpiar_numero(valor):
+    if pd.isna(valor) or valor == "" or valor is None: return 0.0
+    try: 
+        # Maneja tanto comas como puntos decimales
+        s = str(valor).replace(",", ".")
+        return float(s)
+    except: 
+        return 0.0
+
+def show(sheet):
+    st.title("🛒 Sugerido de Compras & Presupuesto")
+    st.caption("Planifica tu reabastecimiento con claridad.")
+    st.markdown("---")
+    
+    if not sheet: return
+
+    # 1. CARGAR DATOS DE FORMA SEGURA
+    try:
+        ws = sheet.worksheet(HOJA_INSUMOS)
+        # Usamos leer_datos_seguro para que si está vacía no rompa el código
+        df = leer_datos_seguro(ws)
+    except:
+        st.error("No se pudo leer la base de insumos.")
+        return
+
+    # --- VALIDACIÓN CRÍTICA PARA EVITAR KEYERROR ---
+    if df.empty or "Stock_Actual_Gr" not in df.columns:
+        st.success("🎉 **Inventario Limpio:** No hay insumos registrados para procesar sugeridos.")
+        return
+
+    # 2. PROCESAMIENTO NUMÉRICO (Ahora es seguro porque validamos arriba)
+    columnas_numericas = ["Stock_Actual_Gr", "Stock_Minimo_Gr", "Factor_Conversion_Gr", "Costo_Ultima_Compra"]
+    for col in columnas_numericas:
+        if col in df.columns:
+            df[col] = df[col].apply(limpiar_numero)
+        else:
+            df[col] = 0.0
+
+    df["Costo_Unitario"] = df["Costo_Ultima_Compra"]
+    
+    # --- LÓGICA DE VISUALIZACIÓN ---
+    def explicar_stock(row):
+        total_interno = row["Stock_Actual_Gr"]
+        factor = row["Factor_Conversion_Gr"]
+        unidad_compra = str(row.get("Unidad_Compra", "Unidad"))
+        
+        if factor <= 0: factor = 1
+        cantidad_compra = total_interno / factor
+        
+        if "Kilo" in unidad_compra or "Libra" in unidad_compra:
+            return f"{cantidad_compra:.2f} {unidad_compra} (= {total_interno:,.0f} g)"
+        elif "Litro" in unidad_compra or "Botella" in unidad_compra:
+            return f"{cantidad_compra:.2f} {unidad_compra} (= {total_interno:,.0f} ml)"
+        elif factor > 1:
+            return f"{cantidad_compra:.1f} {unidad_compra} (= {total_interno:,.0f} unds)"
+        else:
+            return f"{total_interno:,.0f} Unidades"
+
+    df["Stock_Explicado"] = df.apply(explicar_stock, axis=1)
+
+    # Semáforo
+    def evaluar_stock(row):
+        actual = row["Stock_Actual_Gr"]
+        minimo = row["Stock_Minimo_Gr"]
+        if minimo == 0: return "⚪ Sin Configurar"
+        if actual <= 0: return "🔴 AGOTADO"
+        if actual <= minimo: return "🔴 CRÍTICO"
+        if actual <= (minimo * 1.2): return "🟡 ALERTA"
+        return "🟢 OK"
+
+    df["Estado"] = df.apply(evaluar_stock, axis=1)
+    
+    # 3. FILTRAR PEDIDOS
+    df_pedidos = df[df["Estado"].isin(["🔴 AGOTADO", "🔴 CRÍTICO", "🟡 ALERTA"])].copy()
+    
+    if not df_pedidos.empty:
+        # Sugerido en unidades de compra
+        df_pedidos["Cantidad_A_Pedir"] = (
+            ((df_pedidos["Stock_Minimo_Gr"] * 2) - df_pedidos["Stock_Actual_Gr"]) / 
+            df_pedidos["Factor_Conversion_Gr"].replace(0, 1)
+        ).clip(lower=0).apply(lambda x: round(x, 1))
+
+        st.subheader("⚠️ Insumos que requieren atención")
+        st.info("👇 Revisa la columna **'Stock Actual'** para ver el desglose.")
+        
+        df_editor = df_pedidos[[
+            "Nombre_Insumo", 
+            "Estado", 
+            "Stock_Explicado", 
+            "Costo_Unitario", 
+            "Cantidad_A_Pedir"
+        ]]
+        
+        df_final = st.data_editor(
+            df_editor,
+            column_config={
+                "Nombre_Insumo": st.column_config.TextColumn("Insumo", disabled=True),
+                "Estado": st.column_config.TextColumn("Alerta", disabled=True),
+                "Stock_Explicado": st.column_config.TextColumn("Stock Actual", disabled=True),
+                "Costo_Unitario": st.column_config.NumberColumn("Costo Unit.", format="$%d", disabled=True),
+                "Cantidad_A_Pedir": st.column_config.NumberColumn("🛒 A COMPRAR", required=True, min_value=0.0, step=0.5)
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="editor_sugerido_v2"
+        )
+        
+        # Presupuesto y WhatsApp (Misma lógica que tenías)
+        total_estimado = (df_final["Cantidad_A_Pedir"] * df_final["Costo_Unitario"]).sum()
+        st.metric("💰 Presupuesto Estimado", formato_moneda(total_estimado))
+        
+        # --- WHATSAPP ---
+        celular = st.text_input("Enviar a (WhatsApp):", value="57")
+        if st.button("📲 GENERAR Y ENVIAR PEDIDO"):
+            texto_pedido = f"*REQUISICIÓN - {pd.Timestamp.now().strftime('%Y-%m-%d')}*\n\n"
+            items = 0
+            for _, row in df_final.iterrows():
+                if row["Cantidad_A_Pedir"] > 0:
+                    unidad = df[df["Nombre_Insumo"] == row["Nombre_Insumo"]].iloc[0]["Unidad_Compra"]
+                    texto_pedido += f"📦 {row['Cantidad_A_Pedir']} {unidad} - *{row['Nombre_Insumo']}*\n"
+                    items += 1
+            
+            if items > 0:
+                texto_pedido += f"\n*Valor Aprox:* {formato_moneda(total_estimado)}\n"
+                link = f"https://wa.me/{celular}?text={urllib.parse.quote(texto_pedido)}"
+                st.markdown(f'<a href="{link}" target="_blank">Click aquí para abrir WhatsApp</a>', unsafe_allow_html=True)
+            else:
+                st.warning("No hay productos con cantidad mayor a 0.")
+    else:
+        st.success("🎉 Inventario saludable. No hay sugeridos de compra por ahora.")
+
+    st.markdown("---")
+    with st.expander("🔍 Ver Inventario Completo"):
+        st.dataframe(df[["Nombre_Insumo", "Estado", "Stock_Explicado", "Stock_Minimo_Gr"]], use_container_width=True)
