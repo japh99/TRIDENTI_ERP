@@ -1,152 +1,197 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
-from utils import conectar_google_sheets, leer_datos_seguro, ZONA_HORARIA, limpiar_numero
+from utils import conectar_google_sheets, leer_datos_seguro, ZONA_HORARIA, limpiar_numero, generar_id
 
 # --- CONFIGURACIÓN DE HOJAS ---
 HOJA_VENTAS = "LOG_VENTAS_LOYVERSE"
+HOJA_GASTOS = "LOG_GASTOS"
 HOJA_CIERRES = "LOG_CIERRES_CAJA"
+
+# Encabezados de la Base de Datos de Cierres
+HEADERS_CIERRE = [
+    "Fecha_Cierre", "Hora_Cierre", "Saldo_Teorico_E", "Saldo_Real_Cor", 
+    "Diferencia", "Total_Nequi", "Total_Tarjetas", "Ticket_Ini", "Ticket_Fin",
+    "Profit_Retenido", "Estado_Ahorro", "Numero_Cierre_Loyverse", "Shift_ID"
+]
 
 def formato_moneda(valor):
     if pd.isna(valor) or valor == "": return "$ 0"
     try: return f"$ {int(float(valor)):,}".replace(",", ".")
     except: return "$ 0"
 
+# --- BACKEND: CARGA DE DATOS ---
+
+def cargar_turnos_disponibles(sheet):
+    """Agrupa las ventas descargadas por Shift_ID (Turno de Loyverse)."""
+    try:
+        ws_v = sheet.worksheet(HOJA_VENTAS)
+        df_v = leer_datos_seguro(ws_v)
+        if df_v.empty: return pd.DataFrame()
+
+        # Asegurar números
+        df_v["Total_Dinero"] = pd.to_numeric(df_v["Total_Dinero"], errors='coerce').fillna(0)
+        
+        # Agrupar por Shift_ID (Concepto real de cierre en Loyverse)
+        # Si no hay Shift_ID, agrupamos por Fecha para compatibilidad
+        agrupador = "Shift_ID" if "Shift_ID" in df_v.columns else "Fecha"
+        
+        df_shifts = df_v.groupby(agrupador).agg({
+            "Fecha": "first",
+            "Hora": ["min", "max"],
+            "Total_Dinero": "sum",
+            "Numero_Recibo": ["min", "max"]
+        }).reset_index()
+        
+        # Aplanar nombres de columnas
+        df_shifts.columns = [agrupador, "Fecha", "Hora_Apertura", "Hora_Cierre", "Venta_Total", "Ticket_Ini", "Ticket_Fin"]
+        return df_shifts.sort_values("Fecha", ascending=False)
+    except: return pd.DataFrame()
+
+def obtener_tickets_de_turno(sheet, shift_id):
+    """Trae los tickets individuales de un turno específico."""
+    try:
+        ws_v = sheet.worksheet(HOJA_VENTAS)
+        df_v = leer_datos_seguro(ws_v)
+        agrupador = "Shift_ID" if "Shift_ID" in df_v.columns else "Fecha"
+        
+        df_turno = df_v[df_v[agrupador] == shift_id].copy()
+        df_turno["Total_Dinero"] = pd.to_numeric(df_turno["Total_Dinero"], errors='coerce').fillna(0)
+        
+        # Consolidar productos en tickets únicos
+        df_tickets = df_turno.groupby("Numero_Recibo").agg({
+            "Hora": "first",
+            "Total_Dinero": "sum",
+            "Metodo_Pago_Loyverse": "first"
+        }).reset_index().sort_values("Hora")
+        
+        return df_tickets
+    except: return pd.DataFrame()
+
+# --- INTERFAZ PRINCIPAL ---
+
 def show(sheet):
-    st.title("🔐 Auditoría de Cierres realizados")
-    st.caption("Selecciona un cierre guardado para desglosar y auditar sus tickets.")
+    st.title("🔐 Tesorería & Auditoría")
+    st.caption("Procesa cierres basados en los turnos sincronizados de Loyverse.")
     
     if not sheet: return
 
-    # --- 1. SELECCIÓN DE FECHA ---
-    c_f1, c_f2 = st.columns([1, 2])
-    fecha_consulta = c_f1.date_input("📅 Ver cierres del día:", value=datetime.now(ZONA_HORARIA).date())
-    fecha_str = fecha_consulta.strftime("%Y-%m-%d")
+    tab1, tab2 = st.tabs(["📝 PROCESAR NUEVO CIERRE", "📜 CONSULTAR CIERRES PASADOS"])
 
-    # --- 2. CARGAR CIERRES REALIZADOS ---
-    try:
-        ws_c = sheet.worksheet(HOJA_CIERRES)
-        df_c = leer_datos_seguro(ws_c)
-        if not df_c.empty:
-            df_c.columns = df_c.columns.str.strip() # Limpiar encabezados
-    except:
-        st.error("No se encontró la base de datos de cierres.")
-        return
+    with tab1:
+        st.subheader("Selección de Turno a Cerrar")
+        df_shifts = cargar_turnos_disponibles(sheet)
 
-    if df_c.empty:
-        st.warning("No hay cierres registrados en el sistema.")
-        return
+        if df_shifts.empty:
+            st.warning("No hay ventas descargadas. Ve al módulo de **Ventas** para sincronizar con Loyverse.")
+            return
 
-    # Filtrar cierres por la fecha seleccionada
-    # Buscamos en la columna 'Fecha' o 'Fecha_Cierre'
-    col_f = "Fecha_Cierre" if "Fecha_Cierre" in df_c.columns else "Fecha"
-    cierres_encontrados = df_c[df_c[col_f].astype(str) == fecha_str].copy()
+        # Crear etiquetas para el selector
+        df_shifts["Label"] = df_shifts.apply(
+            lambda x: f"Día: {x['Fecha']} | Venta: {formato_moneda(x['Venta_Total'])} | Tickets: {x['Ticket_Ini']} a {x['Ticket_Fin']}", 
+            axis=1
+        )
+        
+        seleccion = st.selectbox("Turnos detectados en el sistema:", df_shifts["Label"].tolist())
+        shift_data = df_shifts[df_shifts["Label"] == seleccion].iloc[0]
+        id_turno = shift_data["Shift_ID"] if "Shift_ID" in shift_data else shift_data["Fecha"]
 
-    if cierres_encontrados.empty:
-        st.info(f"No se encontraron registros de cierre para el día {fecha_str}.")
-        return
-
-    # --- 3. SELECCIONAR EL CIERRE A AUDITAR ---
-    st.markdown("### 🏁 Cierres detectados en esta fecha")
-    
-    cierres_encontrados["Label"] = cierres_encontrados.apply(
-        lambda x: f"Z-Report: {x.get('Numero_Cierre_Loyverse','S/N')} | Hora: {x.get('Hora_Cierre','--:--')} | Venta: {formato_moneda(x.get('Saldo_Teorico_E',0))}", 
-        axis=1
-    )
-    
-    seleccion = st.selectbox("Selecciona el cierre que deseas auditar:", cierres_encontrados["Label"].tolist())
-    
-    # Obtener datos del cierre seleccionado
-    cierre_sel = cierres_encontrados[cierres_encontrados["Label"] == seleccion].iloc[0]
-    t_ini = str(cierre_sel.get("Ticket_Ini", ""))
-    t_fin = str(cierre_sel.get("Ticket_Fin", ""))
-
-    if not t_ini or not t_fin:
-        st.error("Este cierre no tiene guardado el rango de tickets (Ticket_Ini / Ticket_Fin).")
-        return
-
-    # --- 4. CARGAR Y CONSOLIDAR TICKETS DEL RANGO ---
-    st.markdown("---")
-    st.subheader(f"🎫 Auditoría de Tickets (#{t_ini} al #{t_fin})")
-    
-    with st.spinner("Buscando tickets en el historial de ventas..."):
-        try:
-            ws_v = sheet.worksheet(HOJA_VENTAS)
-            df_v_raw = leer_datos_seguro(ws_v)
+        st.markdown("---")
+        
+        # CARGAR TICKETS DEL TURNO
+        df_tickets = obtener_tickets_de_turno(sheet, id_turno)
+        
+        with st.expander("🛠️ Auditoría de Pagos (Desglose Mixto)", expanded=True):
+            st.write("Si una cuenta fue pagada con dos métodos, ajusta los valores aquí.")
             
-            if not df_v_raw.empty:
-                # Estandarizar Numero_Recibo
-                df_v_raw["Numero_Recibo"] = df_v_raw["Numero_Recibo"].astype(str).str.strip()
-                lista_recibos = df_v_raw["Numero_Recibo"].tolist()
+            # Preparar columnas para el editor
+            df_tickets["Efectivo_Real"] = df_tickets.apply(lambda x: x["Total_Dinero"] if x["Metodo_Pago_Loyverse"] == "Efectivo" else 0.0, axis=1)
+            df_tickets["Nequi_Real"] = df_tickets.apply(lambda x: x["Total_Dinero"] if "Nequi" in str(x["Metodo_Pago_Loyverse"]) else 0.0, axis=1)
+            df_tickets["Tarjeta_Real"] = df_tickets.apply(lambda x: x["Total_Dinero"] if "Tarjeta" in str(x["Metodo_Pago_Loyverse"]) else 0.0, axis=1)
+            df_tickets["Suma"] = df_tickets["Efectivo_Real"] + df_tickets["Nequi_Real"] + df_tickets["Tarjeta_Real"]
+
+            df_ed = st.data_editor(
+                df_tickets[["Numero_Recibo", "Hora", "Total_Dinero", "Efectivo_Real", "Nequi_Real", "Tarjeta_Real", "Suma"]],
+                column_config={
+                    "Total_Dinero": st.column_config.NumberColumn("Total Ticket", format="$%d", disabled=True),
+                    "Efectivo_Real": st.column_config.NumberColumn("Efectivo $", format="$%d"),
+                    "Nequi_Real": st.column_config.NumberColumn("Nequi $", format="$%d"),
+                    "Tarjeta_Real": st.column_config.NumberColumn("Tarjeta $", format="$%d"),
+                    "Suma": st.column_config.NumberColumn("Validación", format="$%d", disabled=True),
+                },
+                hide_index=True, use_container_width=True, key="editor_teso_mixto"
+            )
+            
+            # Validación de sumas
+            error_check = abs(df_ed["Total_Dinero"] - df_ed["Suma"]).sum()
+            if error_check > 1:
+                st.error("🚨 La repartición de los pagos no coincide con el total de la venta.")
+
+        # RESULTADOS DEL TURNO
+        v_total = df_ed["Total_Dinero"].sum()
+        v_efec = df_ed["Efectivo_Real"].sum()
+        v_digital = df_ed["Nequi_Real"].sum() + df_ed["Tarjeta_Real"].sum()
+
+        st.markdown("#### 📊 Resumen Financiero")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Venta Bruta Turno", formato_moneda(v_total))
+        c2.metric("Efectivo Esperado", formato_moneda(v_efec))
+        c3.metric("Nequi / Tarjetas", formato_moneda(v_digital))
+
+        st.markdown("---")
+        st.markdown("#### 💵 Arqueo Físico")
+        real = st.number_input("¿Cuánto efectivo contaste físicamente?", min_value=0.0, step=500.0)
+        z_rep = st.text_input("Z-Report / Número de Cierre")
+        
+        diff = real - v_efec
+        if diff == 0: st.success("✅ CAJA CUADRADA")
+        elif diff > 0: st.info(f"### 🔵 SOBRANTE: {formato_moneda(diff)}")
+        else: st.error(f"### 🔴 FALTANTE: {formato_moneda(diff)}")
+
+        if st.button("🔒 GUARDAR CIERRE DEFINITIVO", type="primary", use_container_width=True):
+            if error_check > 1:
+                st.warning("Corrige los tickets en rojo antes de guardar.")
+            elif not z_rep:
+                st.warning("Debes ingresar un identificador de cierre (Z-Report).")
+            else:
+                datos = {
+                    "Fecha_Cierre": shift_data["Fecha"],
+                    "Hora_Cierre": datetime.now(ZONA_HORARIA).strftime("%H:%M"),
+                    "Saldo_Teorico_E": v_efec,
+                    "Saldo_Real_Cor": real,
+                    "Diferencia": diff,
+                    "Total_Nequi": df_ed["Nequi_Real"].sum(),
+                    "Total_Tarjetas": df_ed["Tarjeta_Real"].sum(),
+                    "Ticket_Ini": shift_data["Ticket_Ini"],
+                    "Ticket_Fin": shift_data["Ticket_Fin"],
+                    "Profit_Retenido": v_total * 0.05,
+                    "Estado_Ahorro": "Pendiente",
+                    "Numero_Cierre_Loyverse": z_rep,
+                    "Shift_ID": str(id_turno)
+                }
+                ws_c = sheet.worksheet(HOJA_CIERRES)
+                ws_c.append_row([str(datos.get(h, "")) for h in HEADERS_CIERRE])
+                st.balloons(); time.sleep(1); st.rerun()
+
+    with tab2:
+        st.subheader("Historial de Cierres")
+        fecha_h = st.date_input("Filtrar por fecha:", value=datetime.now(ZONA_HORARIA).date())
+        
+        try:
+            ws_h = sheet.worksheet(HOJA_CIERRES)
+            df_h = leer_datos_seguro(ws_h)
+            if not df_h.empty:
+                df_h.columns = df_h.columns.str.strip()
+                # Filtrar
+                df_res = df_h[df_h["Fecha_Cierre"] == str(fecha_h)].copy()
                 
-                if t_ini in lista_recibos and t_fin in lista_recibos:
-                    idx_i = lista_recibos.index(t_ini)
-                    idx_f = lista_recibos.index(t_fin)
-                    
-                    # Cortar el rango exacto
-                    start, end = (idx_i, idx_f) if idx_i < idx_f else (idx_f, idx_i)
-                    df_turno = df_v_raw.iloc[start:end+1].copy()
-                    
-                    # Convertir montos a número
-                    df_turno["Total_Dinero"] = pd.to_numeric(df_turno["Total_Dinero"], errors='coerce').fillna(0)
-
-                    # CONSOLIDAR: Unir productos de un mismo ticket en una sola fila
-                    df_audit = df_turno.groupby("Numero_Recibo").agg({
-                        "Hora": "first",
-                        "Total_Dinero": "sum",
-                        "Metodo_Pago_Loyverse": "first"
-                    }).reset_index()
-
-                    # Inicializar columnas para que el usuario edite
-                    df_audit["Efectivo_Real"] = df_audit.apply(lambda x: x["Total_Dinero"] if x["Metodo_Pago_Loyverse"] == "Efectivo" else 0.0, axis=1)
-                    df_audit["Nequi_Real"] = df_audit.apply(lambda x: x["Total_Dinero"] if "Nequi" in str(x["Metodo_Pago_Loyverse"]) else 0.0, axis=1)
-                    df_audit["Tarjeta_Real"] = df_audit.apply(lambda x: x["Total_Dinero"] if "Tarjeta" in str(x["Metodo_Pago_Loyverse"]) else 0.0, axis=1)
-                    df_audit["Validación"] = df_audit["Efectivo_Real"] + df_audit["Nequi_Real"] + df_audit["Tarjeta_Real"]
-
-                    # --- TABLA DE EDICIÓN ---
-                    df_ed = st.data_editor(
-                        df_audit[["Numero_Recibo", "Hora", "Total_Dinero", "Efectivo_Real", "Nequi_Real", "Tarjeta_Real", "Validación"]],
-                        column_config={
-                            "Numero_Recibo": "Ticket #",
-                            "Total_Dinero": st.column_config.NumberColumn("Valor Total", format="$%d", disabled=True),
-                            "Efectivo_Real": st.column_config.NumberColumn("Efectivo $", format="$%d"),
-                            "Nequi_Real": st.column_config.NumberColumn("Nequi $", format="$%d"),
-                            "Tarjeta_Real": st.column_config.NumberColumn("Tarjeta $", format="$%d"),
-                            "Validación": st.column_config.NumberColumn("Suma", format="$%d", disabled=True),
-                        },
-                        hide_index=True, use_container_width=True, key="editor_auditoria_cierre"
-                    )
-
-                    # --- RESULTADOS DE LA AUDITORÍA ---
-                    st.markdown("### 📊 Resultado de la Auditoría")
-                    v_total = df_ed["Total_Dinero"].sum()
-                    v_efec = df_ed["Efectivo_Real"].sum()
-                    v_nequi = df_ed["Nequi_Real"].sum()
-                    v_tarj = df_ed["Tarjeta_Real"].sum()
-
-                    c1, c2, c3, c4 = st.columns(4)
-                    c1.metric("Venta Auditada", formato_moneda(v_total))
-                    c2.metric("Efectivo Real", formato_moneda(v_efec))
-                    c3.metric("Nequi Real", formato_moneda(v_nequi))
-                    c4.metric("Tarjeta Real", formato_moneda(v_tarj))
-
-                    # Comparar contra lo que se grabó en el cierre original
-                    teo_original = float(limpiar_numero(cierre_sel.get('Saldo_Teorico_E', 0)))
-                    st.write(f"Venta en Efectivo reportada originalmente: **{formato_moneda(teo_original)}**")
-                    
-                    if v_efec != teo_original:
-                        st.warning(f"Diferencia detectada en auditoría: {formato_moneda(v_efec - teo_original)}")
-                    else:
-                        st.success("La auditoría coincide con el efectivo reportado originalmente.")
-
+                if df_res.empty:
+                    st.info(f"No hay cierres registrados el {fecha_h}")
                 else:
-                    st.error("No se encontraron los tickets en la base de datos de ventas.")
-        except Exception as e:
-            st.error(f"Error procesando la auditoría: {e}")
-
-    # Botón Actualizar
-    st.markdown("---")
-    if st.button("🔄 RECARGAR DATOS"):
-        st.cache_data.clear()
-        st.rerun()
+                    for c in ["Saldo_Teorico_E", "Saldo_Real_Cor", "Diferencia"]:
+                        df_res[c] = pd.to_numeric(df_res[c], errors='coerce').apply(formato_moneda)
+                    st.dataframe(df_res, use_container_width=True, hide_index=True)
+            else:
+                st.write("Base de datos de cierres vacía.")
+        except: pass
