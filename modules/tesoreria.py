@@ -16,8 +16,8 @@ def formato_moneda(valor):
     except: return "$ 0"
 
 def show(sheet):
-    st.title("🔐 Tesorería: Auditoría de Turnos y Tickets")
-    st.caption("Sincronización basada en Shift_ID. Auditoría detallada por transacción.")
+    st.title("🔐 Tesorería: Auditoría Maestra")
+    st.caption("Sincronización por Turnos con edición de pagos por Ticket.")
 
     # 1. CARGA DE DATOS
     try:
@@ -37,7 +37,7 @@ def show(sheet):
     tab_audit, tab_hist, tab_dash = st.tabs(["🔎 AUDITAR TURNO", "📜 HISTORIAL", "📊 DASHBOARD"])
 
     with tab_audit:
-        # --- PROCESAMIENTO DE FECHAS ---
+        # --- LÓGICA DE FECHAS (IGUAL A VENTAS PARA NO SALTAR DÍAS) ---
         df_v["Fecha_DT"] = pd.to_datetime(df_v["Fecha"], errors='coerce')
         df_v = df_v.sort_values("Fecha_DT", ascending=False)
         
@@ -48,16 +48,16 @@ def show(sheet):
         
         df_v[col_id] = df_v[col_id].astype(str).str.strip()
         
-        # FILTRO DE PENDIENTES
+        # Filtro de pendientes (IDs válidos y no auditados)
         df_pendientes = df_v[
             (~df_v[col_id].isin(auditados)) & 
             (df_v[col_id] != "nan") & (df_v[col_id] != "")
         ].copy()
 
         if df_pendientes.empty:
-            st.success("✅ ¡Excelente! No hay turnos pendientes en este mes.")
+            st.success("✅ Todos los turnos han sido auditados.")
         else:
-            # Selector de Mes
+            # Selector de Mes (Ordenado)
             df_pendientes["Mes_Label"] = df_pendientes["Fecha_DT"].dt.strftime('%m - %Y')
             meses_opciones = df_pendientes.sort_values("Fecha_DT", ascending=False)["Mes_Label"].unique().tolist()
             
@@ -67,85 +67,89 @@ def show(sheet):
             df_mes = df_pendientes[df_pendientes["Mes_Label"] == mes_sel]
             df_v["Total_Dinero"] = pd.to_numeric(df_v["Total_Dinero"], errors='coerce').fillna(0)
             
+            # Lista de Turnos
             lista_final_turnos = []
             ids_finales = []
             shifts_unicos = df_mes[col_id].unique().tolist()
             
             for s in shifts_unicos:
                 data_s = df_v[df_v[col_id] == s]
-                fecha_str = data_s["Fecha"].iloc[0]
-                total_v = data_s["Total_Dinero"].sum()
-                lista_final_turnos.append(f"{fecha_str} | Turno: {s[:6]} | {formato_moneda(total_v)}")
+                f_str = data_s["Fecha"].iloc[0]
+                t_v = data_s["Total_Dinero"].sum()
+                lista_final_turnos.append(f"{f_str} | Turno: {s[:6]} | {formato_moneda(t_v)}")
                 ids_finales.append(s)
 
-            seleccion_label = c_turno.selectbox("📋 Selecciona el Cierre de Caja:", lista_final_turnos)
+            seleccion_label = c_turno.selectbox("📋 Selecciona el Turno:", lista_final_turnos)
             
             if seleccion_label:
                 shift_id_real = ids_finales[lista_final_turnos.index(seleccion_label)]
                 df_sel = df_v[df_v[col_id] == shift_id_real].copy()
                 fecha_turno = df_sel["Fecha"].iloc[0]
-                
-                # Totales Generales
-                v_bruta = df_sel["Total_Dinero"].sum()
-                v_efectivo = df_sel[df_sel["Metodo_Pago_Real_Auditado"] == "Efectivo"]["Total_Dinero"].sum()
-                v_digital = df_sel[df_sel["Metodo_Pago_Real_Auditado"].str.contains("Nequi|Davi|Transf", case=False, na=False)]["Total_Dinero"].sum()
-                v_tarjetas = df_sel[df_sel["Metodo_Pago_Real_Auditado"] == "Tarjeta"]["Total_Dinero"].sum()
 
-                # Gastos
+                st.markdown(f"### 🛡️ Auditoría Turno: `{shift_id_real[:15]}...`")
+
+                # --- SECCIÓN: AUDITORÍA DE TICKETS (EDITABLE) ---
+                st.markdown("#### 🎫 Auditoría de Tickets (Desglose de Pagos)")
+                st.info("💡 Si un ticket se pagó con varios medios, edita las columnas de la derecha.")
+
+                # Preparar datos por ticket
+                df_tickets = df_sel.groupby("Numero_Recibo").agg({
+                    "Total_Dinero": "sum",
+                    "Metodo_Pago_Real_Auditado": "first"
+                }).reset_index()
+
+                # Añadir columnas para edición manual de montos
+                # Inicializamos: si el sistema dice 'Efectivo', ponemos el total en 'Efectivo_Real'
+                df_tickets["Efectivo_Real"] = df_tickets.apply(lambda x: x["Total_Dinero"] if x["Metodo_Pago_Real_Auditado"] == "Efectivo" else 0.0, axis=1)
+                df_tickets["Nequi_Real"] = df_tickets.apply(lambda x: x["Total_Dinero"] if x["Metodo_Pago_Real_Auditado"] == "Nequi" else 0.0, axis=1)
+                df_tickets["Tarjeta_Real"] = df_tickets.apply(lambda x: x["Total_Dinero"] if x["Metodo_Pago_Real_Auditado"] == "Tarjeta" else 0.0, axis=1)
+
+                # Editor de Datos
+                df_editado = st.data_editor(
+                    df_tickets[["Numero_Recibo", "Total_Dinero", "Metodo_Pago_Real_Auditado", "Efectivo_Real", "Nequi_Real", "Tarjeta_Real"]],
+                    column_config={
+                        "Numero_Recibo": st.column_config.TextColumn("Ticket #", disabled=True),
+                        "Total_Dinero": st.column_config.NumberColumn("Valor Total", format="$%d", disabled=True),
+                        "Metodo_Pago_Real_Auditado": st.column_config.TextColumn("Ventas Marcó", disabled=True),
+                        "Efectivo_Real": st.column_config.NumberColumn("Efectivo ($)", min_value=0.0, format="$%d"),
+                        "Nequi_Real": st.column_config.NumberColumn("Nequi ($)", min_value=0.0, format="$%d"),
+                        "Tarjeta_Real": st.column_config.NumberColumn("Tarjeta ($)", min_value=0.0, format="$%d"),
+                    },
+                    hide_index=True,
+                    use_container_width=True,
+                    key="editor_tickets_split"
+                )
+
+                # --- RE-CÁLCULO BASADO EN LA EDICIÓN ---
+                v_bruta = df_editado["Total_Dinero"].sum()
+                v_efectivo_audit = df_editado["Efectivo_Real"].sum()
+                v_nequi_audit = df_editado["Nequi_Real"].sum()
+                v_tarjeta_audit = df_editado["Tarjeta_Real"].sum()
+
+                # Gastos (Relación automática)
                 df_g["Fecha"] = df_g["Fecha"].astype(str)
                 gastos_dia = df_g[(df_g["Fecha"] == str(fecha_turno)) & (df_g["Metodo"].str.contains("Efectivo", case=False, na=False))].copy()
                 total_gastos = pd.to_numeric(gastos_dia["Monto"], errors='coerce').fillna(0).sum()
 
-                debe_haber = v_efectivo - total_gastos
+                debe_haber = v_efectivo_audit - total_gastos
 
-                st.markdown(f"### 🛡️ Auditoría Turno: `{shift_id_real}`")
-                
+                # Cuadros de mando actualizados dinámicamente
+                st.write("")
                 k1, k2, k3, k4 = st.columns(4)
                 k1.metric("Venta Bruta", formato_moneda(v_bruta))
-                k2.metric("Efectivo Sistema", formato_moneda(v_efectivo))
-                k3.metric("Gastos en Caja", f"- {formato_moneda(total_gastos)}", delta_color="inverse")
+                k2.metric("Efectivo (Auditado)", formato_moneda(v_efectivo_audit))
+                k3.metric("Gastos Caja", f"- {formato_moneda(total_gastos)}", delta_color="inverse")
                 k4.metric("DEBE HABER", formato_moneda(debe_haber))
 
-                # --- NUEVA SECCIÓN: AUDITORÍA DE TICKETS ---
-                with st.expander("🎫 VER AUDITORÍA DE TICKETS (RECIBOS)", expanded=True):
-                    st.write("A continuación se muestra el desglose por cada ticket del turno:")
-                    
-                    # Agrupamos por Numero_Recibo para ver el total de cada ticket
-                    # y los métodos de pago (Loyverse vs Tu Auditoría de Ventas)
-                    df_tickets = df_sel.groupby("Numero_Recibo").agg({
-                        "Total_Dinero": "sum",
-                        "Metodo_Pago_Loyverse": "first",
-                        "Metodo_Pago_Real_Auditado": "first"
-                    }).reset_index().sort_values("Total_Dinero", ascending=False)
-                    
-                    # Formatear moneda solo para visualización
-                    df_tickets_show = df_tickets.copy()
-                    df_tickets_show["Total_Dinero"] = df_tickets_show["Total_Dinero"].apply(formato_moneda)
-                    
-                    # Estilizar si hay diferencias entre Loyverse y la Auditoría Real
-                    def resaltar_cambios(row):
-                        return ['background-color: #580f12; color: white' if row.Metodo_Pago_Loyverse != row.Metodo_Pago_Real_Auditado else '' for _ in row]
-
-                    st.dataframe(
-                        df_tickets_show.style.apply(resaltar_cambios, axis=1),
-                        column_config={
-                            "Numero_Recibo": "Ticket #",
-                            "Total_Dinero": "Valor Ticket",
-                            "Metodo_Pago_Loyverse": "Loyverse Dice",
-                            "Metodo_Pago_Real_Auditado": "Auditoría Dice"
-                        },
-                        use_container_width=True,
-                        hide_index=True
-                    )
-                    
-                    if not gastos_dia.empty:
-                        st.markdown("---")
-                        st.write("💸 **Gastos descontados de la caja:**")
-                        st.table(gastos_dia[["Concepto", "Monto", "Responsable"]])
+                # Alerta si el usuario no ha cuadrado los montos de los tickets
+                df_editado["Suma_Manual"] = df_editado["Efectivo_Real"] + df_editado["Nequi_Real"] + df_editado["Tarjeta_Real"]
+                descuadres = df_editado[abs(df_editado["Suma_Manual"] - df_editado["Total_Dinero"]) > 1]
+                if not descuadres.empty:
+                    st.error(f"⚠️ Atención: Hay {len(descuadres)} tickets donde la suma de pagos no coincide con el valor del ticket.")
 
                 st.markdown("---")
                 
-                # Auditoría Real
+                # --- VALIDACIÓN FÍSICA ---
                 cc1, cc2 = st.columns(2)
                 efectivo_fisico = cc1.number_input("💵 Efectivo Físico Contado:", min_value=0.0, step=500.0)
                 z_report = cc2.text_input("📑 Z-Report / Ticket:", value=shift_id_real[:10])
@@ -160,16 +164,17 @@ def show(sheet):
                 ahorro = v_bruta * (pct / 100)
                 st.warning(f"Se registrará un ahorro de **{formato_moneda(ahorro)}**")
 
-                notas = st.text_area("Observaciones:")
-
-                if st.button("🔒 GUARDAR AUDITORÍA", type="primary", use_container_width=True):
-                    datos = [fecha_turno, datetime.now(ZONA_HORARIA).strftime("%H:%M"), 
-                             debe_haber, efectivo_fisico, diferencia, 
-                             v_digital, v_tarjetas, notas, ahorro, "Pendiente", shift_id_real]
-                    try:
-                        sheet.worksheet(HOJA_CIERRES).append_row(datos)
-                        st.balloons(); st.success("Auditado con éxito."); time.sleep(2); st.rerun()
-                    except Exception as e: st.error(f"Error al guardar: {e}")
+                if st.button("🔒 GUARDAR AUDITORÍA FINAL", type="primary", use_container_width=True):
+                    if not descuadres.empty:
+                        st.warning("No puedes guardar si los montos de los tickets no coinciden con su valor total.")
+                    else:
+                        datos = [fecha_turno, datetime.now(ZONA_HORARIA).strftime("%H:%M"), 
+                                 debe_haber, efectivo_fisico, diferencia, 
+                                 v_nequi_audit, v_tarjeta_audit, "Auditado por tickets", ahorro, "Pendiente", shift_id_real]
+                        try:
+                            sheet.worksheet(HOJA_CIERRES).append_row(datos)
+                            st.balloons(); st.success("Auditado con éxito."); time.sleep(2); st.rerun()
+                        except Exception as e: st.error(f"Error al guardar: {e}")
 
     with tab_hist:
         st.subheader("📜 Historial de Turnos Auditados")
