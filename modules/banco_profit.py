@@ -4,181 +4,191 @@ from datetime import datetime
 import time
 from utils import conectar_google_sheets, leer_datos_seguro, ZONA_HORARIA, limpiar_numero, generar_id
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURACIÓN DE HOJAS ---
 HOJA_CIERRES = "LOG_CIERRES_CAJA"
-HOJA_BANCO = "LOG_BANCO_MOVIMIENTOS"
+HOJA_ABONOS = "LOG_ABONOS_PROFIT"
+HOJA_RETIROS = "LOG_RETIROS_PROFIT"
 
 def formato_moneda(valor):
     if pd.isna(valor) or valor == "": return "$ 0"
     try: return f"$ {int(float(valor)):,}".replace(",", ".")
     except: return "$ 0"
 
-# --- BACKEND ---
-
-def cargar_datos_banco(sheet):
-    """Carga cierres pendientes y el historial de movimientos del banco."""
-    try:
-        # 1. Cargar Cierres para ver qué falta por ahorrar
-        ws_c = sheet.worksheet(HOJA_CIERRES)
-        df_c = leer_datos_seguro(ws_c)
-        
-        # 2. Cargar Movimientos del Banco
-        try:
-            ws_b = sheet.worksheet(HOJA_BANCO)
-            df_b = leer_datos_seguro(ws_b)
-        except:
-            # Crear la hoja de movimientos si no existe
-            ws_b = sheet.add_worksheet(title=HOJA_BANCO, rows="2000", cols="10")
-            headers = ["ID", "Fecha", "Hora", "Tipo", "Monto", "Referencia_Turno", "Motivo", "Responsable"]
-            ws_b.append_row(headers)
-            df_b = pd.DataFrame(columns=headers)
-
-        # Limpiar datos de cierres
-        if not df_c.empty:
-            df_c.columns = df_c.columns.str.strip()
-            df_c["Profit_Retenido"] = pd.to_numeric(df_c["Profit_Retenido"], errors='coerce').fillna(0)
-            if "Estado_Ahorro" not in df_c.columns: df_c["Estado_Ahorro"] = "Pendiente"
-        
-        # Limpiar datos de banco
-        if not df_b.empty:
-            df_b["Monto"] = pd.to_numeric(df_b["Monto"], errors='coerce').fillna(0)
-        else:
-            df_b = pd.DataFrame(columns=["ID", "Fecha", "Hora", "Tipo", "Monto", "Referencia_Turno", "Motivo", "Responsable"])
-
-        return df_c, df_b, ws_c, ws_b
-    except Exception as e:
-        st.error(f"Error cargando banco: {e}")
-        return pd.DataFrame(), pd.DataFrame(), None, None
-
-def registrar_movimiento_banco(ws_b, tipo, monto, ref, motivo, resp):
-    """Registra una entrada o salida en el historial del banco."""
-    try:
-        fila = [
-            generar_id(),
-            datetime.now(ZONA_HORARIA).strftime("%Y-%m-%d"),
-            datetime.now(ZONA_HORARIA).strftime("%H:%M"),
-            tipo, # ENTRADA / SALIDA
-            monto,
-            ref,
-            motivo,
-            resp
-        ]
-        ws_b.append_row(fila)
-        return True
-    except: return False
-
-def actualizar_estado_ahorro(ws_c, shift_id_o_fecha):
-    """Marca el cierre como 'Ahorrado' en la hoja de Tesorería."""
-    try:
-        # Buscamos por Shift_ID o por Fecha en la Columna A o L
-        data = ws_c.get_all_values()
-        headers = data[0]
-        col_shift = headers.index("Shift_ID") + 1 if "Shift_ID" in headers else 1
-        col_estado = headers.index("Estado_Ahorro") + 1
-        
-        for i, row in enumerate(data):
-            if row[col_shift - 1] == str(shift_id_o_fecha):
-                ws_c.update_cell(i + 1, col_estado, "Ahorrado")
-                break
-    except: pass
-
-# --- INTERFAZ ---
-
 def show(sheet):
     st.title("🐷 Banco Profit (Ahorro Real)")
-    st.caption("Gestiona el dinero físico reservado de tus ventas.")
+    st.caption("Gestiona el dinero físico reservado de tus ventas y tus retiros de utilidad.")
+
+    # 1. CARGA DE DATOS SEGURO
+    try:
+        ws_cierres = sheet.worksheet(HOJA_CIERRES)
+        df_c = leer_datos_seguro(ws_cierres)
+        
+        ws_abonos = sheet.worksheet(HOJA_ABONOS)
+        df_a = leer_datos_seguro(ws_abonos)
+        
+        ws_retiros = sheet.worksheet(HOJA_RETIROS)
+        df_r = leer_datos_seguro(ws_retiros)
+        
+        # Validación de columna crítica para evitar KeyError
+        col_profit = "Profit_Retenido"
+        if not df_c.empty and col_profit not in df_c.columns:
+            st.error(f"⚠️ Error de base de datos: No se encuentra la columna '{col_profit}'.")
+            return
+    except Exception as e:
+        st.error(f"Error cargando bases de datos del banco: {e}")
+        return
+
+    # --- 2. PROCESAMIENTO DE SALDOS ---
+    # Limpieza de números
+    if not df_c.empty:
+        df_c[col_profit] = pd.to_numeric(df_c[col_profit], errors='coerce').fillna(0)
+        df_c["Estado_Ahorro"] = df_c["Estado_Ahorro"].astype(str).str.strip()
     
-    if not sheet: return
+    if not df_a.empty:
+        df_a["Monto_Abonado"] = pd.to_numeric(df_a["Monto_Abonado"], errors='coerce').fillna(0)
+    
+    if not df_r.empty:
+        df_r["Monto_Retirado"] = pd.to_numeric(df_r["Monto_Retirado"], errors='coerce').fillna(0)
 
-    df_c, df_b, ws_c, ws_b = cargar_datos_banco(sheet)
+    # Cálculos
+    ahorro_real_confirmado = df_a["Monto_Abonado"].sum() if not df_a.empty else 0
+    retiros_totales = df_r["Monto_Retirado"].sum() if not df_r.empty else 0
+    saldo_disponible = ahorro_real_confirmado - retiros_totales
 
-    # --- 1. CÁLCULO DE SALDOS ---
-    entradas = df_b[df_b["Tipo"] == "ENTRADA"]["Monto"].sum()
-    salidas = df_b[df_b["Tipo"] == "SALIDA"]["Monto"].sum()
-    saldo_disponible = entradas - salidas
+    # Dinero que Tesorería ya calculó pero que aún no has confirmado (Pendiente)
+    pendientes = df_c[df_c["Estado_Ahorro"] == "Pendiente"].copy() if not df_c.empty else pd.DataFrame()
+    monto_pendiente = pendientes[col_profit].sum() if not pendientes.empty else 0
 
-    # Cierres que aún no se han guardado en el banco
-    pendientes = df_c[df_c["Estado_Ahorro"] != "Ahorrado"].copy() if not df_c.empty else pd.DataFrame()
-    ahorro_pendiente_total = pendientes["Profit_Retenido"].sum()
-
-    # DASHBOARD
+    # --- DASHBOARD PRINCIPAL ---
     c1, c2, c3 = st.columns(3)
-    c1.metric("💰 Saldo Real en Banco", formato_moneda(saldo_disponible))
-    c2.metric("⚠️ Pendiente por Guardar", formato_moneda(ahorro_pendiente_total))
-    c3.metric("📤 Total Retirado", formato_moneda(salidas))
+    c1.metric("💰 Saldo Real Disponible", formato_moneda(saldo_disponible), help="Dinero que ya confirmaste haber guardado menos retiros.")
+    c2.metric("⚠️ Pendiente por Confirmar", formato_moneda(monto_pendiente), help="Dinero de cierres auditados que aún no has metido al banco.")
+    c3.metric("💸 Total Retirado", formato_moneda(retiros_totales))
 
     st.markdown("---")
-    t1, t2, t3 = st.tabs(["📥 CONFIRMAR AHORRO", "💸 RETIRAR DINERO", "📜 HISTORIAL COMPLETO"])
+    t1, t2, t3 = st.tabs(["📥 CONFIRMAR INGRESO", "📤 REGISTRAR RETIRO", "📜 HISTORIAL COMPLETO"])
 
     with t1:
-        st.subheader("Confirmar ingreso de ahorro")
+        st.subheader("Confirmar dinero físico ingresado")
         if not pendientes.empty:
-            st.info("Selecciona un cierre de tesorería para registrar el dinero que vas a guardar físicamente.")
+            st.info(f"Tienes {len(pendientes)} cierres de caja esperando por ser guardados en el fondo.")
             
-            # Etiqueta para el selector
-            pendientes["Label"] = pendientes.apply(
-                lambda x: f"Jornada: {x['Fecha_Cierre']} | Sugerido: {formato_moneda(x['Profit_Retenido'])}", axis=1
-            )
+            # Crear lista amigable para seleccionar
+            opciones = pendientes.apply(
+                lambda x: f"{x['Fecha']} | Sugerido: {formato_moneda(x[col_profit])} | ID: {str(x['Numero_Cierre_Loyverse'])[:8]}", 
+                axis=1
+            ).tolist()
             
-            opcion = st.selectbox("Cierre pendiente:", pendientes["Label"].tolist())
-            datos_sel = pendientes[pendientes["Label"] == opcion].iloc[0]
+            seleccion = st.selectbox("¿Qué ahorro vas a guardar físicamente ahora?", opciones)
             
-            # --- FLEXIBILIDAD: EDITAR EL MONTO ---
-            col_ing1, col_ing2 = st.columns(2)
-            monto_real = col_ing1.number_input("Monto real a guardar:", value=float(datos_sel["Profit_Retenido"]), step=1000.0)
-            responsable = col_ing2.text_input("Quién guarda el dinero:", value="Admin")
+            # Recuperar datos del registro seleccionado
+            idx_sel = opciones.index(seleccion)
+            fila_c = pendientes.iloc[idx_sel]
             
-            nota = st.text_input("Nota adicional:", placeholder="Ej: Guardado en caja fuerte de seguridad")
+            ca, cb = st.columns(2)
+            monto_real = ca.number_input("Monto real ingresado:", value=float(fila_c[col_profit]), step=1000.0)
+            responsable = cb.text_input("Responsable del depósito:", value="Admin")
 
-            if st.button("✅ CONFIRMAR Y GUARDAR DINERO", type="primary", use_container_width=True):
-                if monto_real >= 0:
-                    ref_turno = datos_sel.get("Shift_ID", datos_sel["Fecha_Cierre"])
-                    if registrar_movimiento_banco(ws_b, "ENTRADA", monto_real, ref_turno, nota, responsable):
-                        # Marcar en tesorería que este turno ya se ahorró
-                        actualizar_estado_ahorro(ws_c, ref_turno)
-                        st.success(f"¡Dinero guardado! Se han sumado {formato_moneda(monto_real)} al banco.")
+            if st.button("✅ CONFIRMAR INGRESO DE DINERO", type="primary", use_container_width=True):
+                # 1. Registrar el abono en LOG_ABONOS_PROFIT
+                # Estructura: ID, Fecha, Hora, Fecha_Cierre_O, Monto_Abonado, Responsable
+                datos_abono = [
+                    generar_id(),
+                    datetime.now(ZONA_HORARIA).strftime("%Y-%m-%d"),
+                    datetime.now(ZONA_HORARIA).strftime("%H:%M"),
+                    fila_c["Fecha"],
+                    monto_real,
+                    responsable
+                ]
+                
+                # 2. Actualizar el estado en LOG_CIERRES_CAJA (para que ya no sea Pendiente)
+                try:
+                    # Buscamos la fila correcta en el Excel por el ID de Loyverse (Columna K / 11)
+                    ids_en_excel = ws_cierres.col_values(11) 
+                    target_id = str(fila_c["Numero_Cierre_Loyverse"])
+                    
+                    if target_id in ids_en_excel:
+                        row_num = ids_en_excel.index(target_id) + 1
+                        # Actualizamos la columna J (Estado_Ahorro / Columna 10)
+                        ws_cierres.update_cell(row_num, 10, "Ahorrado")
+                        
+                        # Guardamos el abono
+                        ws_abonos.append_row(datos_abono)
+                        
                         st.balloons()
-                        time.sleep(1); st.rerun()
+                        st.success("¡Ingreso confirmado! El saldo disponible ha sido actualizado.")
+                        time.sleep(1.5)
+                        st.rerun()
+                    else:
+                        st.error("No se encontró el registro original en el Excel para actualizar.")
+                except Exception as e:
+                    st.error(f"Error al sincronizar con el Excel: {e}")
         else:
-            st.success("🎉 ¡Felicidades! No tienes ahorros pendientes por guardar.")
+            st.success("🎉 ¡Excelente! No tienes ahorros pendientes por confirmar.")
 
     with t2:
-        st.subheader("Registrar Salida de Fondos")
-        st.warning("Usa esta sección para reportar gastos pagados con el ahorro o retiros de utilidad.")
+        st.subheader("Registrar salida de dinero del fondo")
+        st.warning("Usa esta sección solo si vas a sacar dinero del ahorro para gastos o utilidades.")
         
-        col_ret1, col_ret2 = st.columns(2)
-        monto_ret = col_ret1.number_input("Monto a retirar:", min_value=0.0, step=10000.0)
-        motivo_ret = col_ret2.text_input("¿En qué se usará el dinero?")
-        resp_ret = st.text_input("Autorizado por:")
-
+        c_r1, c_r2 = st.columns(2)
+        m_ret = c_r1.number_input("Monto a retirar:", min_value=0.0, step=5000.0)
+        motivo = c_r2.text_input("Motivo del retiro:", placeholder="Ej: Pago de impuestos, utilidad socios...")
+        resp_r = st.text_input("Persona que retira el dinero:", key="banco_resp_r")
+        
         if st.button("🚨 EJECUTAR RETIRO", type="primary", use_container_width=True):
-            if monto_ret > saldo_disponible:
-                st.error("No puedes retirar más de lo que hay en el saldo disponible.")
-            elif monto_ret > 0 and motivo_ret and resp_ret:
-                if registrar_movimiento_banco(ws_b, "SALIDA", monto_ret, "Retiro Manual", motivo_ret, resp_ret):
-                    st.success("Retiro registrado correctamente.")
-                    time.sleep(1); st.rerun()
+            if 0 < m_ret <= saldo_disponible:
+                if motivo and resp_r:
+                    # Estructura LOG_RETIROS_PROFIT: ID, Fecha, Hora, Monto_Retirado, Motivo, Responsable
+                    datos_r = [
+                        generar_id(),
+                        datetime.now(ZONA_HORARIA).strftime("%Y-%m-%d"),
+                        datetime.now(ZONA_HORARIA).strftime("%H:%M"),
+                        m_ret,
+                        motivo,
+                        resp_r
+                    ]
+                    ws_retiros.append_row(datos_r)
+                    st.success("Retiro registrado exitosamente.")
+                    time.sleep(1.5)
+                    st.rerun()
+                else:
+                    st.warning("Completa el motivo y el responsable.")
             else:
-                st.warning("Completa todos los campos.")
+                st.error(f"Fondos insuficientes. El saldo real es {formato_moneda(saldo_disponible)}")
 
     with t3:
-        st.subheader("Movimientos de la Cuenta de Ahorros")
-        if not df_b.empty:
-            # Estilo para la tabla
-            def color_tipo(val):
-                return 'color: green; font-weight: bold' if val == "ENTRADA" else 'color: red; font-weight: bold'
+        st.subheader("Historial de Entradas y Salidas")
+        
+        # Crear un historial unificado para la vista
+        h_entradas = pd.DataFrame()
+        if not df_a.empty:
+            h_entradas = df_a[["Fecha", "Monto_Abonado", "Responsable"]].copy()
+            h_entradas.columns = ["Fecha", "Monto", "Responsable"]
+            h_entradas["Tipo"] = "ENTRADA (Ahorro)"
+            h_entradas["Detalle"] = "Ingreso de Cierre"
 
-            df_ver = df_b.sort_values(["Fecha", "Hora"], ascending=False).copy()
-            df_ver["Monto"] = df_ver["Monto"].apply(formato_moneda)
+        h_salidas = pd.DataFrame()
+        if not df_r.empty:
+            h_salidas = df_r[["Fecha", "Monto_Retirado", "Motivo", "Responsable"]].copy()
+            h_salidas.columns = ["Fecha", "Monto", "Detalle", "Responsable"]
+            h_salidas["Tipo"] = "SALIDA (Retiro)"
+
+        # Combinar ambos si hay datos
+        if not h_entradas.empty or not h_salidas.empty:
+            historial = pd.concat([h_entradas, h_salidas]).sort_values("Fecha", ascending=False)
             
+            # Formato moneda para la tabla
+            hist_view = historial.copy()
+            hist_view["Monto"] = hist_view["Monto"].apply(formato_moneda)
+            
+            def color_mov(v):
+                return 'color: green; font-weight: bold' if "ENTRADA" in v else 'color: red; font-weight: bold'
+
             st.dataframe(
-                df_ver[["Fecha", "Tipo", "Monto", "Referencia_Turno", "Motivo", "Responsable"]]
-                .style.applymap(color_tipo, subset=["Tipo"]),
+                hist_view[["Fecha", "Tipo", "Monto", "Detalle", "Responsable"]]
+                .style.applymap(color_mov, subset=["Tipo"]),
                 use_container_width=True,
                 hide_index=True
             )
-            
-            if st.button("🔄 ACTUALIZAR HISTORIAL"):
-                st.cache_data.clear(); st.rerun()
         else:
             st.info("Aún no hay movimientos registrados en el banco.")
