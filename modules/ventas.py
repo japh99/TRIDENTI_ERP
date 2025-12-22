@@ -4,7 +4,6 @@ import requests
 import time
 from datetime import datetime, timedelta, date
 import calendar
-import urllib.parse
 from utils import conectar_google_sheets, ZONA_HORARIA, leer_datos_seguro
 
 # --- CONFIGURACIÓN ---
@@ -46,34 +45,25 @@ def obtener_shifts_descargados(sheet):
 # --- FUNCIONES API LOYVERSE ---
 
 def obtener_turnos_rango(fecha_inicio, fecha_fin):
-    """Trae todos los turnos entre dos fechas usando la API de Loyverse."""
     url = f"{URL_BASE}/shifts"
-    
     params = {
         "created_at_min": fecha_inicio.strftime("%Y-%m-%dT00:00:00Z"),
         "created_at_max": fecha_fin.strftime("%Y-%m-%dT23:59:59Z"),
         "limit": 250
     }
-    
     turnos_encontrados = []
     cursor = None
-    
     try:
         while True:
             if cursor: params["cursor"] = cursor
             r = requests.get(url, headers=HEADERS_API, params=params)
             if r.status_code != 200: break
-            
             data = r.json()
             turnos_encontrados.extend(data.get("shifts", []))
-            
             cursor = data.get("cursor")
             if not cursor: break
-            
         return turnos_encontrados
-    except Exception as e:
-        st.error(f"Error de conexión con Loyverse: {e}")
-        return []
+    except: return []
 
 def descargar_recibos_turno(opened_at, closed_at):
     url = f"{URL_BASE}/receipts"
@@ -93,7 +83,6 @@ def transformar_a_filas(recibos, shift_id):
         dt_local = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")).astimezone(ZONA_HORARIA)
         pagos = r.get("payments", [])
         metodo = pagos[0].get("name", "Efectivo") if pagos else "Efectivo"
-        
         for item in r.get("line_items", []):
             nombre = item.get("item_name", "Desconocido")
             if item.get("variant_name"): nombre += f" {item['variant_name']}"
@@ -115,40 +104,32 @@ def show(sheet):
     ws = sheet.worksheet(NOMBRE_HOJA)
     asegurar_estructura_db(ws)
 
-    # --- 1. SELECTORES DE RANGO EN PANTALLA ---
-    with st.container():
-        st.markdown('<div class="card-modulo" style="padding:20px; min-height:100px;">', unsafe_allow_html=True)
+    # --- 1. FILTRO DE BÚSQUEDA (CORREGIDO) ---
+    with st.container(border=True):
         st.subheader("🔍 Filtro de Búsqueda")
+        c1, c2, c3 = st.columns([1, 1, 1])
         
-        col_f1, col_f2, col_f3 = st.columns([1, 1, 1])
-        
-        modo_busqueda = col_f1.radio("Modo:", ["Por Mes", "Rango Libre"], horizontal=True)
-        
+        modo_busqueda = c1.radio("Modo:", ["Por Mes", "Rango Libre"], horizontal=True)
         hoy = date.today()
         
         if modo_busqueda == "Por Mes":
-            mes_sel = col_f2.selectbox("Mes:", list(range(1, 13)), 
-                                       format_func=lambda x: calendar.month_name[x].capitalize(),
-                                       index=hoy.month - 1)
-            anio_sel = col_f3.selectbox("Año:", [2024, 2025, 2026], index=1)
-            
+            mes_sel = c2.selectbox("Mes:", list(range(1, 13)), 
+                                   format_func=lambda x: calendar.month_name[x].capitalize(),
+                                   index=hoy.month - 1)
+            anio_sel = c3.selectbox("Año:", [2024, 2025, 2026], index=1)
             f_inicio = date(anio_sel, mes_sel, 1)
             f_fin = date(anio_sel, mes_sel, calendar.monthrange(anio_sel, mes_sel)[1])
         else:
-            rango_custom = col_f2.date_input("Selecciona Rango:", [hoy - timedelta(days=7), hoy])
+            rango_custom = c2.date_input("Selecciona Rango:", [hoy - timedelta(days=7), hoy])
             if len(rango_custom) == 2:
                 f_inicio, f_fin = rango_custom[0], rango_custom[1]
-            else:
-                f_inicio = f_fin = hoy
+            else: f_inicio = f_fin = hoy
 
         if st.button("🚀 ESCANEAR CIERRES EN LOYVERSE", use_container_width=True, type="primary"):
             st.session_state["turnos_api"] = obtener_turnos_rango(f_inicio, f_fin)
             st.cache_data.clear()
-            st.success(f"Escaneo completado para el periodo solicitado.")
 
-        st.markdown('</div>', unsafe_allow_html=True)
-
-    # 2. PROCESAR RESULTADOS
+    # --- 2. MOSTRAR RESULTADOS ---
     if "turnos_api" in st.session_state:
         turnos = st.session_state["turnos_api"]
         ids_descargados = obtener_shifts_descargados(sheet)
@@ -157,14 +138,13 @@ def show(sheet):
             st.info("No se encontraron cierres en el rango seleccionado.")
             return
 
-        # Clasificar para la tabla
         pendientes_para_bajar = []
         datos_tabla = []
         
         for s in turnos:
             id_s = s["id"]
-            descargado = id_s in ids_descargados
             t_fin_raw = s.get("closed_at")
+            descargado = id_s in ids_descargados
             
             if not t_fin_raw: estado = "🟢 ABIERTO"
             elif descargado: estado = "✅ DESCARGADO"
@@ -188,26 +168,24 @@ def show(sheet):
         st.subheader("📋 Resultados del Escaneo")
         st.dataframe(pd.DataFrame(datos_tabla)[["Estado", "Fecha", "Inicio", "Fin", "Venta Bruta"]], use_container_width=True, hide_index=True)
 
-        # 3. ACCIONES DE DESCARGA
+        # --- 3. ACCIONES DE DESCARGA ---
         if pendientes_para_bajar:
             st.markdown("---")
-            st.warning(f"Se detectaron **{len(pendientes_para_bajar)}** cierres sin descargar.")
+            st.warning(f"Se encontraron **{len(pendientes_para_bajar)}** cierres sin descargar.")
             
             if st.button("📥 DESCARGAR TODOS LOS PENDIENTES DEL RANGO", type="primary", use_container_width=True):
                 progreso = st.progress(0)
                 todas_las_filas = []
                 
                 for i, t in enumerate(pendientes_para_bajar):
-                    st.write(f"Bajando cierre del {t['opened_at'][:10]}...")
                     recibos = descargar_recibos_turno(t["opened_at"], t["closed_at"])
                     if recibos:
                         todas_las_filas.extend(transformar_a_filas(recibos, t["id"]))
                     progreso.progress((i + 1) / len(pendientes_para_bajar))
                 
                 if todas_las_filas:
-                    st.write(f"Guardando {len(todas_las_filas)} registros en Excel...")
                     ws.append_rows(todas_las_filas)
-                    st.success("Sincronización terminada con éxito.")
+                    st.success("Sincronización terminada.")
                     st.balloons()
                     time.sleep(2)
                     st.rerun()
