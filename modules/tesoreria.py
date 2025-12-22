@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime
 import plotly.express as px
 import time
-from utils import conectar_google_sheets, leer_datos_seguro, ZONA_HORARIA, limpiar_numero, generar_id
+from utils import conectar_google_sheets, leer_datos_seguro, ZONA_HORARIA, limpiar_numero
 
 # --- CONFIGURACIÓN ---
 HOJA_VENTAS = "LOG_VENTAS_LOYVERSE"
@@ -16,8 +16,8 @@ def formato_moneda(valor):
     except: return "$ 0"
 
 def show(sheet):
-    st.title("🔐 Tesorería: Auditoría por Cierres")
-    st.caption("Selecciona un cierre de ventas específico para validar la caja y programar ahorros.")
+    st.title("🔐 Tesorería: Auditoría por Turnos (Shifts)")
+    st.caption("Sincronización basada en Shift_ID de Loyverse.")
 
     # 1. CARGA DE DATOS
     try:
@@ -32,83 +32,85 @@ def show(sheet):
         st.warning("No hay datos de ventas disponibles.")
         return
 
-    tab_audit, tab_hist, tab_dash = st.tabs(["🔎 AUDITAR CIERRE", "📜 HISTORIAL", "📊 DASHBOARD"])
+    # --- NOMBRE EXACTO DE LA COLUMNA SEGÚN TU IMAGEN ---
+    col_identificador = "Shift_ID" 
+
+    tab_audit, tab_hist, tab_dash = st.tabs(["🔎 AUDITAR TURNO", "📜 HISTORIAL", "📊 DASHBOARD"])
 
     with tab_audit:
-        # --- PASO A: IDENTIFICAR LOS CIERRES DISPONIBLES EN VENTAS ---
-        # Buscamos la columna que identifica el cierre (ajusta el nombre si es distinto)
-        col_cierre = "Numero_Cierre_Loyverse" if "Numero_Cierre_Loyverse" in df_v.columns else "ID_Cierre"
+        # Identificamos los Shifts que NO han sido auditados aún
+        # Convertimos a string para evitar errores de comparación
+        df_v[col_identificador] = df_v[col_identificador].astype(str)
         
-        if col_cierre not in df_v.columns:
-            st.error(f"No se encontró la columna de identificación de cierre '{col_cierre}' en Ventas.")
-            return
-
-        # Obtenemos los IDs de cierre únicos que NO están en la hoja de Tesorería
-        cierres_en_ventas = df_v[df_v[col_cierre] != ""][col_cierre].unique().tolist()
-        cierres_ya_auditados = df_c["Numero_Cierre_Loyverse"].astype(str).unique().tolist() if not df_c.empty else []
+        # Obtenemos lista de todos los turnos en ventas
+        todos_los_shifts = [s for s in df_v[col_identificador].unique() if s and s != "nan" and s != "None"]
         
-        pendientes = [str(c) for c in cierres_en_ventas if str(c) not in cierres_ya_auditados]
+        # Obtenemos los ya auditados de la hoja de cierres
+        auditados = []
+        if not df_c.empty and "Numero_Cierre_Loyverse" in df_c.columns:
+            auditados = df_c["Numero_Cierre_Loyverse"].astype(str).unique().tolist()
+        
+        # Turnos que faltan
+        pendientes = [s for s in todos_los_shifts if s not in auditados]
 
         if not pendientes:
-            st.success("✅ ¡Excelente! No hay cierres de caja pendientes por auditar.")
+            st.success("✅ ¡Todos los turnos (Shifts) están auditados!")
         else:
-            # Crear una lista amigable: "Cierre #123 | 2025-12-21 | $ 500.000"
+            # Preparamos las opciones para el selectbox
             df_v["Total_Dinero"] = pd.to_numeric(df_v["Total_Dinero"], errors='coerce').fillna(0)
             
             opciones_label = []
-            for p in pendientes:
-                data_temp = df_v[df_v[col_cierre].astype(str) == p]
-                fecha_c = data_temp["Fecha"].iloc[0]
-                total_c = data_temp["Total_Dinero"].sum()
-                opciones_label.append(f"Cierre #{p} | {fecha_c} | {formato_moneda(total_c)}")
+            for s in pendientes:
+                data_shift = df_v[df_v[col_identificador] == s]
+                fecha_shift = data_shift["Fecha"].iloc[0]
+                total_shift = data_shift["Total_Dinero"].sum()
+                # Mostramos: "ID Corto | Fecha | Total"
+                opciones_label.append(f"{s[:8]}... | {fecha_shift} | {formato_moneda(total_shift)}")
 
-            seleccion = st.selectbox("📋 Selecciona el cierre de ventas para auditar:", opciones_label)
+            seleccion_label = st.selectbox("📋 Selecciona el Turno (Shift) a auditar:", opciones_label)
             
-            if seleccion:
-                cierre_id = seleccion.split(" | ")[0].replace("Cierre #", "")
+            if seleccion_label:
+                # Recuperamos el ID real buscando el match en la lista original
+                idx_sel = opciones_label.index(seleccion_label)
+                shift_id_real = pendientes[idx_sel]
                 
-                # --- PASO B: FILTRAR DATOS DE ESTE CIERRE ESPECÍFICO ---
-                df_cierre_sel = df_v[df_v[col_cierre].astype(str) == cierre_id].copy()
-                fecha_cierre = df_cierre_sel["Fecha"].iloc[0]
+                # --- FILTRAR DATOS DE ESTE SHIFT ---
+                df_sel = df_v[df_v[col_identificador] == shift_id_real].copy()
+                fecha_turno = df_sel["Fecha"].iloc[0]
                 
-                # Totales de Ventas
-                v_bruta = df_cierre_sel["Total_Dinero"].sum()
-                v_efectivo = df_cierre_sel[df_cierre_sel["Metodo_Pago_Real_Auditado"] == "Efectivo"]["Total_Dinero"].sum()
-                v_digital = df_cierre_sel[df_cierre_sel["Metodo_Pago_Real_Auditado"].str.contains("Nequi|Davi|Transf", case=False, na=False)]["Total_Dinero"].sum()
-                v_tarjetas = df_cierre_sel[df_cierre_sel["Metodo_Pago_Real_Auditado"] == "Tarjeta"]["Total_Dinero"].sum()
+                # Totales
+                v_bruta = df_sel["Total_Dinero"].sum()
+                v_efectivo = df_sel[df_sel["Metodo_Pago_Real_Auditado"] == "Efectivo"]["Total_Dinero"].sum()
+                v_digital = df_sel[df_sel["Metodo_Pago_Real_Auditado"].str.contains("Nequi|Davi|Transf", case=False, na=False)]["Total_Dinero"].sum()
+                v_tarjetas = df_sel[df_sel["Metodo_Pago_Real_Auditado"] == "Tarjeta"]["Total_Dinero"].sum()
 
-                # --- PASO C: RELACIÓN CON GASTOS (POR FECHA DEL CIERRE) ---
+                # --- RELACIÓN CON GASTOS (Basada en la fecha del turno) ---
                 df_g["Fecha"] = df_g["Fecha"].astype(str)
-                gastos_dia = df_g[(df_g["Fecha"] == str(fecha_cierre)) & (df_g["Metodo"].str.contains("Efectivo", case=False, na=False))].copy()
+                gastos_dia = df_g[(df_g["Fecha"] == str(fecha_turno)) & (df_g["Metodo"].str.contains("Efectivo", case=False, na=False))].copy()
                 gastos_dia["Monto"] = pd.to_numeric(gastos_dia["Monto"], errors='coerce').fillna(0)
                 total_gastos = gastos_dia["Monto"].sum()
 
-                # --- PASO D: RESULTADO SISTEMA ---
+                # --- RESULTADO SISTEMA ---
                 debe_haber = v_efectivo - total_gastos
 
-                # INTERFAZ
-                st.markdown(f"### 🛡️ Auditoría del {seleccion}")
+                st.markdown(f"### 🛡️ Auditoría Turno: `{shift_id_real}`")
                 
                 k1, k2, k3, k4 = st.columns(4)
                 k1.metric("Venta Bruta", formato_moneda(v_bruta))
                 k2.metric("Entradas Efectivo", formato_moneda(v_efectivo))
-                k3.metric("Gastos Pagados", f"- {formato_moneda(total_gastos)}", delta_color="inverse")
-                k4.metric("DEBE HABER (Caja)", formato_moneda(debe_haber))
+                k3.metric("Gastos en Efectivo", f"- {formato_moneda(total_gastos)}", delta_color="inverse")
+                k4.metric("DEBE HABER CAJA", formato_moneda(debe_haber))
 
-                with st.expander("📦 Desglose de Ventas"):
-                    resumen_prod = df_cierre_sel.groupby("Nombre_Plato")["Total_Dinero"].sum().reset_index().sort_values("Total_Dinero", ascending=False)
-                    st.table(resumen_prod)
-
-                if not gastos_dia.empty:
-                    with st.expander("💸 Detalle de Gastos Descontados"):
-                        st.table(gastos_dia[["Concepto", "Monto", "Responsable"]])
+                with st.expander("📦 Desglose de Productos Vendidos"):
+                    resumen = df_sel.groupby("Nombre_Plato")["Total_Dinero"].sum().reset_index().sort_values("Total_Dinero", ascending=False)
+                    st.table(resumen)
 
                 st.markdown("---")
                 
                 # VALIDACIÓN REAL
                 cc1, cc2 = st.columns(2)
-                efectivo_fisico = cc1.number_input("💵 Efectivo Real Entregado:", min_value=0.0, step=500.0)
-                z_report = cc2.text_input("📑 Z-Report / Comprobante Final:", value=cierre_id)
+                efectivo_fisico = cc1.number_input("💵 Efectivo Físico Contado:", min_value=0.0, step=500.0)
+                z_report = cc2.text_input("📑 Z-Report / Comprobante:", value=shift_id_real[:10])
 
                 diferencia = efectivo_fisico - debe_haber
                 
@@ -124,10 +126,10 @@ def show(sheet):
 
                 notas = st.text_area("Notas de la auditoría:")
 
-                if st.button("🔒 FINALIZAR AUDITORÍA Y CERRAR TURNO", type="primary", use_container_width=True):
-                    # Guardar en LOG_CIERRES_CAJA
+                if st.button("🔒 GUARDAR Y CERRAR TURNO", type="primary", use_container_width=True):
+                    # Fecha, Hora, Teórico, Real, Dif, Digital, Tarjeta, Notas, Ahorro, Estado, ID_Loyverse
                     datos = [
-                        fecha_cierre, 
+                        fecha_turno, 
                         datetime.now(ZONA_HORARIA).strftime("%H:%M"),
                         debe_haber,
                         efectivo_fisico,
@@ -137,37 +139,21 @@ def show(sheet):
                         notas,
                         ahorro,
                         "Pendiente",
-                        z_report
+                        shift_id_real # Guardamos el Shift_ID aquí para que desaparezca de pendientes
                     ]
                     try:
                         sheet.worksheet(HOJA_CIERRES).append_row(datos)
-                        st.balloons(); st.success("Cierre Guardado."); time.sleep(2); st.rerun()
+                        st.balloons(); st.success("Auditado correctamente."); time.sleep(2); st.rerun()
                     except Exception as e: st.error(f"Error: {e}")
 
     with tab_hist:
-        st.subheader("📜 Historial de Cierres Auditados")
+        st.subheader("📜 Historial de Turnos Auditados")
         if not df_c.empty:
-            df_c["Diferencia"] = pd.to_numeric(df_c["Diferencia"], errors='coerce').fillna(0)
-            def color_semaforo(v):
-                return f'color: {"red" if v < 0 else ("green" if v == 0 else "blue")}; font-weight: bold'
-            
-            st.dataframe(
-                df_c[["Fecha", "Saldo_Real_Con", "Diferencia", "Profit_Retenido", "Numero_Cierre_Loyverse"]]
-                .style.applymap(color_semaforo, subset=["Diferencia"]),
-                use_container_width=True, hide_index=True
-            )
+            st.dataframe(df_c[["Fecha", "Saldo_Real_Con", "Diferencia", "Profit_Retenido", "Numero_Cierre_Loyverse"]], use_container_width=True, hide_index=True)
 
     with tab_dash:
-        st.subheader("📊 Dashboard de Control")
+        st.subheader("📊 Análisis de Diferencias")
         if not df_c.empty:
-            df_d = df_c.copy()
-            df_d["Diferencia"] = pd.to_numeric(df_d["Diferencia"], errors='coerce').fillna(0)
-            df_d["Profit_Retenido"] = pd.to_numeric(df_d["Profit_Retenido"], errors='coerce').fillna(0)
-            
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Efectivo Auditado", formato_moneda(pd.to_numeric(df_d["Saldo_Real_Con"], errors='coerce').sum()))
-            c2.metric("Acumulado Diferencias", formato_moneda(df_d["Diferencia"].sum()))
-            c3.metric("Total Ahorros Generados", formato_moneda(df_d["Profit_Retenido"].sum()))
-            
-            fig = px.line(df_d, x="Fecha", y="Diferencia", title="Tendencia de Descuadres", markers=True)
+            df_c["Diferencia"] = pd.to_numeric(df_c["Diferencia"], errors='coerce').fillna(0)
+            fig = px.bar(df_c, x="Fecha", y="Diferencia", color="Diferencia", title="Sobrantes y Faltantes por Turno")
             st.plotly_chart(fig, use_container_width=True)
