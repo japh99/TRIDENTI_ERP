@@ -20,11 +20,11 @@ HEADERS_API = {"Authorization": f"Bearer {LOYVERSE_TOKEN}"}
 # --- FUNCIONES API LOYVERSE ---
 
 def obtener_turnos_api(fecha_obj):
-    """Consulta la lista de cierres (shifts) de un día específico."""
+    """Consulta la lista de cierres (shifts) en Loyverse."""
     url = f"{URL_BASE}/shifts"
-    # Buscamos un rango amplio alrededor del día para no perder los de la madrugada
+    # Rango amplio para capturar cierres que cruzan medianoche
     min_t = datetime.combine(fecha_obj, datetime.min.time()) - timedelta(hours=12)
-    max_t = datetime.combine(fecha_obj, datetime.max.time()) + timedelta(hours=12)
+    max_t = datetime.combine(fecha_obj, datetime.max.time()) + timedelta(hours=24)
     
     params = {
         "created_at_min": min_t.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -40,28 +40,48 @@ def obtener_turnos_api(fecha_obj):
     except: return []
 
 def descargar_recibos_turno(opened_at, closed_at):
-    """Descarga todos los recibos entre la apertura y cierre del turno."""
+    """Descarga todos los recibos emitidos durante el turno."""
     url = f"{URL_BASE}/receipts"
-    # Ajustamos un margen de 1 minuto para asegurar que entren todos
     params = {
         "created_at_min": opened_at,
-        "created_at_max": closed_at if closed_at else datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "created_at_max": closed_at if closed_at else datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
         "limit": 250
     }
     
-    recibos_totales = []
     try:
         r = requests.get(url, headers=HEADERS_API, params=params)
         if r.status_code == 200:
-            recibos_totales = r.json().get("receipts", [])
-    except: pass
-    return recibos_totales
+            return r.json().get("receipts", [])
+        return []
+    except: return []
 
-# --- PROCESAMIENTO DE DATOS ---
+# --- LÓGICA DE CONTROL DE DUPLICADOS ---
+
+def verificar_descarga_en_sheet(sheet, opened_at, closed_at):
+    """Revisa si ya existen ventas en el rango de tiempo del turno en el Excel."""
+    try:
+        ws = sheet.worksheet(NOMBRE_HOJA)
+        df_existente = leer_datos_seguro(ws)
+        if df_existente.empty: return False
+        
+        # Combinar Fecha y Hora del Excel para comparar
+        df_existente["TS"] = pd.to_datetime(df_existente["Fecha"] + " " + df_existente["Hora"])
+        
+        # Convertir tiempos de la API a datetime
+        start = pd.to_datetime(opened_at).tz_convert(None)
+        # Si el turno sigue abierto, usamos ahora
+        end = pd.to_datetime(closed_at).tz_convert(None) if closed_at else datetime.utcnow()
+        
+        # Si hay algun registro en ese rango, lo marcamos como descargado
+        coincidencias = df_existente[(df_existente["TS"] >= start) & (df_existente["TS"] <= end)]
+        return len(coincidencias) > 0
+    except: return False
 
 def procesar_recibos_a_df(recibos):
+    """Convierte la respuesta JSON de Loyverse en un DataFrame limpio."""
     filas = []
     for r in recibos:
+        # Convertir hora UTC a Colombia
         fecha_dt = datetime.fromisoformat(r["created_at"].replace("Z", "+00:00")).astimezone(ZONA_HORARIA)
         fecha_str = fecha_dt.strftime("%Y-%m-%d")
         hora_str = fecha_dt.strftime("%H:%M")
@@ -71,17 +91,21 @@ def procesar_recibos_a_df(recibos):
         metodo = pagos[0].get("name", "Efectivo") if pagos else "Efectivo"
         
         items = r.get("line_items", [])
-        if not items:
-            filas.append([fecha_str, hora_str, recibo_no, "MANUAL", "Venta Manual", 1, r.get("total_money", 0), metodo, metodo])
-        else:
-            for it in items:
-                nombre = it.get("item_name", "Desconocido")
-                if it.get("variant_name"): nombre = f"{nombre} {it['variant_name']}"
-                filas.append([
-                    fecha_str, hora_str, recibo_no, it.get("item_id", ""),
-                    nombre, it.get("quantity", 1), it.get("total_money", 0),
-                    metodo, metodo
-                ])
+        for it in items:
+            nombre = it.get("item_name", "Desconocido")
+            if it.get("variant_name"): nombre = f"{nombre} {it['variant_name']}"
+            
+            filas.append([
+                fecha_str, 
+                hora_str, 
+                recibo_no, 
+                it.get("item_id", ""),
+                nombre, 
+                it.get("quantity", 1), 
+                it.get("total_money", 0),
+                metodo, # Metodo_Pago_Loyverse
+                metodo  # Metodo_Pago_Real_Auditado (Inicializado igual)
+            ])
     
     columnas = ["Fecha", "Hora", "Numero_Recibo", "ID_Plato", "Nombre_Plato", "Cantidad_Vendida", "Total_Dinero", "Metodo_Pago_Loyverse", "Metodo_Pago_Real_Auditado"]
     return pd.DataFrame(filas, columns=columnas)
@@ -89,65 +113,76 @@ def procesar_recibos_a_df(recibos):
 # --- INTERFAZ ---
 
 def show(sheet):
-    st.title("📈 Descarga de Ventas por Cierres")
-    st.caption("Sincroniza los turnos reales de Loyverse con tu base de datos.")
+    st.title("📈 Sincronización de Ventas por Cierres")
+    st.caption("Evita duplicados descargando turnos específicos de Loyverse.")
     
     if not sheet: return
 
-    # 1. Seleccionar Fecha para buscar turnos
+    # 1. Búsqueda de Turnos
     hoy = datetime.now(ZONA_HORARIA).date()
-    fecha_busqueda = st.date_input("¿De qué día quieres ver los cierres?", value=hoy)
+    col_f1, col_f2 = st.columns([1, 2])
+    fecha_busqueda = col_f1.date_input("¿Qué día abrió caja?", value=hoy)
     
-    with st.spinner("Buscando turnos en Loyverse..."):
+    with st.spinner("Buscando cierres en Loyverse..."):
         turnos = obtener_turnos_api(fecha_busqueda)
     
     if not turnos:
-        st.warning("No se encontraron cierres (shifts) en Loyverse para esta fecha.")
-        if st.button("🔄 Reintentar"): st.rerun()
+        st.warning(f"No se detectaron cierres el día {fecha_busqueda}.")
         return
 
-    # 2. Elegir el Turno específico
-    st.markdown("### 🏪 Cierres encontrados en Loyverse")
-    
+    # 2. Identificar cuáles ya están en el sistema
     opciones_turnos = []
+    estados_descarga = []
+    
     for i, t in enumerate(turnos):
-        f_open = datetime.fromisoformat(t["opened_at"].replace("Z", "+00:00")).astimezone(ZONA_HORARIA).strftime("%H:%M")
-        f_close = "Abierto"
-        if t.get("closed_at"):
-            f_close = datetime.fromisoformat(t["closed_at"].replace("Z", "+00:00")).astimezone(ZONA_HORARIA).strftime("%H:%M")
+        t_open = datetime.fromisoformat(t["opened_at"].replace("Z", "+00:00")).astimezone(ZONA_HORARIA)
+        t_close_raw = t.get("closed_at")
+        t_close = datetime.fromisoformat(t_close_raw.replace("Z", "+00:00")).astimezone(ZONA_HORARIA) if t_close_raw else None
         
-        opciones_turnos.append(f"Cierre #{len(turnos)-i} | Inicio: {f_open} - Fin: {f_close}")
+        # Verificar en el Excel
+        ya_descargado = verificar_descarga_en_sheet(sheet, t["opened_at"], t_close_raw)
+        icon = "✅ (Ya en Sistema)" if ya_descargado else "📥 (Pendiente)"
+        
+        label = f"{icon} Cierre: {t_open.strftime('%H:%M')} a {t_close.strftime('%H:%M') if t_close else 'Abierto'}"
+        opciones_turnos.append(label)
+        estados_descarga.append(ya_descargado)
 
-    seleccion = st.selectbox("Selecciona el turno que vas a sincronizar:", opciones_turnos)
-    idx_turno = opciones_turnos.index(seleccion)
-    turno_data = turnos[idx_turno]
+    # 3. Selector de Turno
+    st.markdown("### 🏪 Turnos Disponibles")
+    seleccion = st.selectbox("Selecciona el turno para procesar:", opciones_turnos)
+    idx_sel = opciones_turnos.index(seleccion)
+    turno_final = turnos[idx_sel]
+    esta_listo = estados_descarga[idx_sel]
 
-    # 3. Descargar y Guardar
     st.markdown("---")
     c1, c2 = st.columns(2)
-    
-    if c1.button("🚀 DESCARGAR Y SINCRONIZAR ESTE TURNO", type="primary", use_container_width=True):
-        with st.status("Sincronizando con Loyverse...", expanded=True) as status:
-            st.write("Bajando recibos...")
-            recibos = descargar_recibos_turno(turno_data["opened_at"], turno_data.get("closed_at"))
-            
-            if recibos:
-                df_nuevos = procesar_recibos_a_df(recibos)
-                st.write(f"Procesados {len(recibos)} recibos...")
-                
-                # Guardar en Google Sheets
-                ws = sheet.worksheet(NOMBRE_HOJA)
-                # Opcional: Borrar si ya existen esos recibos para no duplicar
-                # datos = df_nuevos.values.tolist()
-                ws.append_rows(df_nuevos.values.tolist())
-                
-                status.update(label="✅ Sincronización Exitosa", state="complete")
-                st.success(f"Turno guardado. Ahora puedes ir a Tesorería a auditar los tickets.")
-                st.balloons()
-            else:
-                status.update(label="No hay recibos", state="error")
-                st.error("Este turno no tiene ventas registradas.")
 
-    if c2.button("🗑️ LIMPIAR HISTORIAL LOCAL", use_container_width=True):
+    if esta_listo:
+        c1.info("Este turno ya fue descargado previamente.")
+        if c1.button("♻️ VOLVER A DESCARGAR (Sobrescribir)", use_container_width=True):
+            esta_listo = False # Forzamos la descarga
+
+    if not esta_listo:
+        if c1.button("🚀 DESCARGAR VENTAS AHORA", type="primary", use_container_width=True):
+            with st.status("Conectando con Loyverse...", expanded=True) as status:
+                recibos = descargar_recibos_turno(turno_final["opened_at"], turno_final.get("closed_at"))
+                
+                if recibos:
+                    df_nuevos = procesar_recibos_a_df(recibos)
+                    ws = sheet.worksheet(NOMBRE_HOJA)
+                    
+                    # Guardar
+                    ws.append_rows(df_nuevos.values.tolist())
+                    
+                    status.update(label="Sincronización Exitosa", state="complete")
+                    st.success(f"Se guardaron {len(recibos)} recibos correctamente.")
+                    st.balloons()
+                    time.sleep(2)
+                    st.rerun()
+                else:
+                    status.update(label="Error", state="error")
+                    st.error("No hay ventas en este turno.")
+
+    if c2.button("🔄 ACTUALIZAR LISTA", use_container_width=True):
         st.cache_data.clear()
-        st.success("Memoria limpia.")
+        st.rerun()
